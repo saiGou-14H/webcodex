@@ -84,6 +84,14 @@ Windows 接入和长期部署见[部署指南](docs/DEPLOYMENT.zh-CN.md)与 [MCP
 - [AI 辅助接入](docs/AI_ONBOARDING.zh-CN.md) —— 让 AI 帮你配置 WebCodex
 - [安全说明](SECURITY.md) —— 安全模型与使用建议
 - [文档索引](docs/INDEX.zh-CN.md) —— 全部用户和贡献者文档
+- [WebGpt 部署记录与两种使用模式](docs/WEBGPT_DEPLOYMENT.zh-CN.md) —— 本次真实部署（OpenAI Secure MCP Tunnel + Linux Server + Windows Runner + Coding Agent）与路径 A/B 两种使用模式
+
+### 两种使用模式（WebGpt 部署）
+
+- **路径 A（推荐）**：模型直接用 WebCodex MCP 核心工具（`read_file`/`search_project_text`/`apply_text_edits`/`run_process`/`show_changes` 等）读→改→跑→审，不依赖 Codex。
+- **路径 B（可选）**：模型委托 Coding Agent（`coding_agent_*` → Codex），依赖 Codex 后端 Responses API 健康。
+
+> 日常开发优先路径 A；路径 B 作为把完整任务委托给自主 Agent 的补充。完整工作流见 `docs/WEBGPT_DEPLOYMENT.zh-CN.md` 第 8 节。
 
 ## 安全
 

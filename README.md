@@ -84,6 +84,14 @@ Those are follow-up operating concerns, not concepts a first-time user should ha
 - [AI-assisted setup](docs/AI_ONBOARDING.md) — have an AI agent help configure WebCodex
 - [Security](SECURITY.md) — security model and operational guidance
 - [Documentation index](docs/INDEX.md) — all user and contributor documentation
+- [WebGpt deployment record and two usage modes](docs/WEBGPT_DEPLOYMENT.zh-CN.md) — a real deployment (OpenAI Secure MCP Tunnel + Linux Server + Windows Runner + Coding Agent) and the Path A / Path B modes
+
+### Two usage modes (WebGpt deployment)
+
+- **Path A (recommended)**: the model drives the project directly via WebCodex MCP core tools (`read_file`/`search_project_text`/`apply_text_edits`/`run_process`/`show_changes`), no Codex dependency.
+- **Path B (optional)**: the model delegates to Coding Agent (`coding_agent_*` → Codex), which depends on a healthy Codex Responses API.
+
+> Prefer Path A for everyday work; Path B is an optional delegation for a full autonomous task. See `docs/WEBGPT_DEPLOYMENT.zh-CN.md` §8.
 
 ## Security
 
