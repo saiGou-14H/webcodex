@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 "use strict";
-/* codex-acp-proxy: WebCodex Runner <-> ACP v1 (NDJSON stdio) <-> codex exec
+/* codex-acp-proxy: WebCodex Runner <-> ACP v1 (NDJSON stdio) <-> codex
  * 环境变量:
- *   CODEX_ACP_STUB=1      用 stub 输出，便于冒烟测试
- *   CODEX_CMD=<cmd>       覆盖 codex 命令（默认 "codex"；你的桌面板代理可改为其命令）
+ *   CODEX_ACP_STUB=1    用 stub 输出，便于冒烟测试（无需 codex）
+ *   CODEX_CMD=<path>    codex 入口；若为 .js，用 node 直接跑；否则直接 spawn。
+ *                      建议（Windows npm 全局）设为 ...\@openai\codex\bin\codex.js
  */
 const readline = require("readline");
 const { spawn } = require("child_process");
@@ -12,6 +13,7 @@ const PROTO = 1;
 const sessions = new Map();
 const STUB = process.env.CODEX_ACP_STUB === "1";
 const CODEX_CMD = process.env.CODEX_CMD || "codex";
+const IS_WIN = process.platform === "win32";
 
 function send(o) { process.stdout.write(JSON.stringify(o) + "\n"); }
 function reply(req, result, error) {
@@ -26,6 +28,16 @@ function finishErr(sid, msg, resolve) {
   resolve({ status: "failed", stop: "error", out: msg });
 }
 
+function codexCommand(cwd, instruction) {
+  const args = ["exec", "--json", instruction];
+  if (/\.[jJ][sS]$/.test(CODEX_CMD)) {
+    // 用当前 node 直接跑 codex 的 .js 入口（绕开 .cmd/.exe 查找，参数安全）
+    return { child: spawn(process.execPath, [CODEX_CMD, ...args], { cwd: cwd || process.cwd(), env: process.env }) };
+  }
+  // 非 .js：Windows 用 shell 以便解析 .cmd/.ps1 shim；其它平台直接跑
+  return { child: spawn(CODEX_CMD, args, { cwd: cwd || process.cwd(), env: process.env, shell: IS_WIN }) };
+}
+
 function runCodex(sid, cwd, instruction) {
   return new Promise((resolve) => {
     if (STUB) {
@@ -35,18 +47,11 @@ function runCodex(sid, cwd, instruction) {
       return resolve({ status: "completed", stop: "end_turn", out });
     }
     let child;
-    try {
-      child = spawn(CODEX_CMD, ["exec", "--json", instruction], { cwd: cwd || process.cwd(), env: process.env });
-    } catch (e) { return finishErr(sid, String(e), resolve); }
+    try { child = codexCommand(cwd, instruction).child; }
+    catch (e) { return finishErr(sid, String(e), resolve); }
     let buf = "";
-    child.stdout.on("data", (d) => {
-      buf += d.toString();
-      update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: d.toString() } });
-    });
-    child.stderr.on("data", (d) => {
-      buf += "\n" + d.toString();
-      update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: d.toString() } });
-    });
+    child.stdout.on("data", (d) => { buf += d.toString(); update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: d.toString() } }); });
+    child.stderr.on("data", (d) => { buf += "\n" + d.toString(); update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: d.toString() } }); });
     child.on("error", (e) => finishErr(sid, String(e), resolve));
     child.on("close", (code) => {
       const ok = code === 0;
