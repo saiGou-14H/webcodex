@@ -25,16 +25,16 @@ function finishErr(sid, msg, resolve) {
 }
 
 function spawnCodex(cwd, instruction) {
-  const args = ["exec", "--json", instruction];
+  const args = ["exec", "--sandbox", process.env.CODEX_SANDBOX || "danger-full-access"];
   if (/\.[jJ][sS]$/.test(CODEX_CMD)) {
-    // 用 node 直接跑 .js 入口
+    // let node run a .js entry
     return spawn(process.execPath, [CODEX_CMD, ...args], { cwd: cwd || process.cwd(), env: process.env });
   }
   if (fs.existsSync(CODEX_CMD)) {
-    // 真实绝对路径（codex.exe）→ 直接 spawn，不 shell
+    // real absolute path (codex.exe) -> spawn directly, no shell
     return spawn(CODEX_CMD, args, { cwd: cwd || process.cwd(), env: process.env });
   }
-  // 裸命令名 → Windows shell 解析 .cmd/.ps1
+  // bare command -> Windows shell resolves .cmd/.ps1
   return spawn(CODEX_CMD, args, { cwd: cwd || process.cwd(), env: process.env, shell: IS_WIN });
 }
 
@@ -49,6 +49,8 @@ function runCodex(sid, cwd, instruction) {
     let child;
     try { child = spawnCodex(cwd, instruction); }
     catch (e) { return finishErr(sid, String(e), resolve); }
+    // write instruction to codex stdin then EOF so codex does not block on "Reading additional input from stdin..."
+    try { if (child.stdin) { child.stdin.write(instruction); child.stdin.end(); } } catch (_) {}
     let buf = "";
     child.stdout.on("data", (d) => { buf += d.toString(); update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: d.toString() } }); });
     child.stderr.on("data", (d) => { buf += "\n" + d.toString(); update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: d.toString() } }); });
