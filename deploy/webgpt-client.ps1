@@ -43,7 +43,7 @@ id = "codex"
 name = "Codex"
 executable = "$nod"
 args = ["$pxy"]
-env_from_env = { "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME", "PATH" = "PATH" }
+env_from_env = { "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME", "PATH" = "PATH", "CODEX_CMD" = "CODEX_CMD" }
 allowed_config_options = []
 "@
 Set-Content $agent -Value ($raw.TrimEnd() + "`r`n" + $block) -NoNewline
