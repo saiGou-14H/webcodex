@@ -193,3 +193,59 @@ cat /root/.config/openai/tunnel-health.url | xargs -I{} curl -sS -o /dev/null -w
 ```
 
 Windows Runner 启动日志应含 `registered client_id=... actual_transport=polling projects=N`；Coding Agent 启动后 `acp coding-agent manager initialized`。
+
+## 8. 两种使用模式（Path A / Path B）
+
+WebCodex MCP 给模型提供的是**分层的工具链**，因此实际开发有两条路径：
+
+```
+WebGPT MCP
+├── 项目发现   list_projects / project_overview / work_on_project
+├── 读取分析   read_file / read_files / search_project_text(s) / list_project_files
+│             document_symbols / workspace_symbols / goto_definition / find_references
+│             call_hierarchy / document_diagnostics
+├── 文件修改   apply_text_edits（expected_sha256 乐观并发）/ apply_patch_checked
+├── 执行命令   run_process / run_script / run_shell / run_job
+├── 验证       cargo_check / cargo_test / go_test / validation_summary
+├── Git 审查   git_status / git_diff / git_diff_hunks / git_log / show_changes
+└── Coding Agent  coding_agent_start / coding_agent_observe / coding_agent_cancel
+```
+
+### 路径 A：模型直接用 MCP 核心工具（✅ 推荐，稳定）
+
+```text
+模型 → WebGPT MCP → Runner → 项目
+```
+模型自己做「读 → 分析 → 改 → 跑 → 测 → 审」，**不依赖 Codex**。这是可靠路径：
+- 项目已在 `allowed_root` 内、`connected=true`、`allow_patch=true`，核心工具即可读写/执行；
+- `apply_text_edits` 带 `expected_sha256` 先校验再改（文件被并发改动会被拒）；
+- `run_process/run_script/run_job` 跑在项目机器上（Windows Runner），`run_shell` 可跑测试/编译。
+
+> 注意：`apply_text_edits` 能改是因为模型**先 read_file 拿到 SHA256** 再提交；复杂多文件用 `apply_patch_checked`。
+
+**推荐工作流（模型自己干）**：
+1. `work_on_project` + `project_overview` + 读 README/AGENTS.md/PRD 建上下文；
+2. `search_project_text` 搜「督办/三会一课」等，定位 Controller/Service/Mapper/Entity/DTO/VO/migration + 调用链（`goto_definition`/`find_references`/`call_hierarchy`）；
+3. 对照 PRD 标出已有/缺失的接口与状态机，列缺口清单；
+4. `read_file`（拿 SHA256）→ `apply_text_edits`（或 `apply_patch_checked`），改前 `show_changes` 确认；
+5. `run_process`/`run_script` 跑测试/编译（`mvn test`/`gradle`/`javac`），`document_diagnostics` 看诊断；
+6. `show_changes` + `workspace_hygiene_check`，汇总改动/PRD 覆盖/测试结果/剩余问题。
+
+### 路径 B：模型委托 Coding Agent（→ Codex）（可选，依赖 Codex 后端）
+
+```text
+模型 → coding_agent_start → Coding Agent(Runner) → Codex → 项目
+```
+模型作为**一级规划/审查**，把完整开发任务**委托给二级执行 Agent（Codex）**，再用 `coding_agent_observe` 查看进度。
+
+- 需要：`[acp]` 配置 + Runner 上报 `coding_agent_runs` + `coding_agent:run` scope + 真实 `codex` 可执行文件；
+- **强依赖 Codex 后端的 Responses API 健康**。若 Codex 指向的自托管 `.../v1/responses`（或 OpenAI API）不可用，Coding Agent 会进入 `coding_agent_cancel_terminal_missing` / `outcome_unknown`（终态丢失）；
+- 通常只在「把一个完整模块交给自主 Agent 实现」时才有额外价值；**日常开发/改代码推荐直接用路径 A**。
+
+### 建议
+
+**优先路径 A**（模型直接干）。只有当：
+- 想委托一个自主 Agent 完成「读码→实现→自测→修错」的闭环，并且 Codex 后端 API 健康时，
+才用路径 B。
+
+> 已知问题（本部署实测）：Coding Agent 依赖的 Codex Responses API 曾返回 502（`ai.saigou.work/v1/responses`），导致 `coding_agent_start` 虽能 spawn/进入 running，但终态无法确认（`outcome_unknown`）。因此**不要因为 Coding Agent 未完成就阻塞**——直接用路径 A 的核心工具即可完成开发。
