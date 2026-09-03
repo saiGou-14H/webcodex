@@ -8,10 +8,10 @@ try {
   }
   foreach ($c in $cands) { try { Stop-Process -Id $c.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
 } catch { }
-taskkill /IM webcodex-runner.exe /F 2>$null
-taskkill /IM codex.exe /F 2>$null
-taskkill /IM codex-command-runner.exe /F 2>$null
-taskkill /IM codex-windows-sandbox-setup.exe /F 2>$null
+cmd /c "taskkill /IM webcodex-runner.exe /F >nul 2>nul"
+cmd /c "taskkill /IM codex.exe /F >nul 2>nul"
+cmd /c "taskkill /IM codex-command-runner.exe /F >nul 2>nul"
+cmd /c "taskkill /IM codex-windows-sandbox-setup.exe /F >nul 2>nul"
 Start-Sleep -Seconds 1
 Write-Host "    cleanup done."
 
