@@ -9,21 +9,24 @@ Write-Host "[2] webcodex   = $cli"
 Write-Host "[3] proxy      = $proxy"
 Write-Host "[4] agent.toml = $agent"
 
-# ---- resolve codex.js ----
-$codexjs = $null
-try {
-  $codex = (Get-Command codex -ErrorAction Stop).Source
-  $cand = Join-Path (Split-Path $codex -Parent) "node_modules\@openai\codex\bin\codex.js"
-  if (Test-Path $cand) { $codexjs = $cand }
-} catch { }
-if (-not $codexjs) {
-  foreach ($p in @(
-    (Join-Path (Split-Path $node -Parent) "node_modules\@openai\codex\bin\codex.js"),
-    "$env:USERPROFILE\AppData\Local\nvm\v24.2.0\node_modules\@openai\codex\bin\codex.js"
-  )) { if (Test-Path $p) { $codexjs = $p; break } }
+# ---- resolve codex: prefer real codex.exe, then codex.js ----
+$codexcmd = $null
+$real = Get-ChildItem "$env:LOCALAPPDATA\OpenAI\Codex\bin" -Recurse -Filter "codex.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($real) { $codexcmd = $real.FullName }
+if (-not $codexcmd) {
+  try {
+    $c = (Get-Command codex -ErrorAction Stop).Source
+    $cand = Join-Path (Split-Path $c -Parent) "node_modules\@openai\codex\bin\codex.js"
+    if (Test-Path $cand) { $codexcmd = $cand }
+  } catch { }
 }
-if (-not $codexjs) { Write-Host "[x] codex.js NOT found. Install: npm i -g @openai/codex"; exit 1 }
-Write-Host "[5] codex.js   = $codexjs"
+if (-not $codexcmd) {
+  foreach ($p in @((Join-Path (Split-Path $node -Parent) "node_modules\@openai\codex\bin\codex.js"))) {
+    if (Test-Path $p) { $codexcmd = $p; break }
+  }
+}
+if (-not $codexcmd) { Write-Host "[x] codex not found. Install: npm i -g @openai/codex"; exit 1 }
+Write-Host "[5] codex      = $codexcmd"
 
 if (-not (Test-Path $agent)) { Write-Host "[x] agent.toml NOT found: $agent"; exit 1 }
 
@@ -52,7 +55,7 @@ Write-Host "[6] [acp] written to agent.toml (with PATH)"
 # ---- env ----
 $env:HOME = $env:USERPROFILE
 $env:CODEX_HOME = Join-Path $env:USERPROFILE ".codex"
-$env:CODEX_CMD = $codexjs
+$env:CODEX_CMD = $codexcmd
 Write-Host "[7] HOME=$env:HOME"
 Write-Host "    CODEX_HOME=$env:CODEX_HOME"
 Write-Host "    CODEX_CMD=$env:CODEX_CMD"
