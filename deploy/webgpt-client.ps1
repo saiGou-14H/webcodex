@@ -1,4 +1,20 @@
 $ErrorActionPreference = "Stop"
+
+# ---- [0] kill leftover WebGpt/Codex processes from a previous run ----
+Write-Host "[0] killing previous WebGpt/Codex processes..."
+try {
+  $cands = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name -match '^(node|webcodex-runner|codex)' -and $_.CommandLine -match 'codex-acp-proxy|webcodex\.js agent run|webcodex-runner'
+  }
+  foreach ($c in $cands) { try { Stop-Process -Id $c.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
+} catch { }
+taskkill /IM webcodex-runner.exe /F 2>$null
+taskkill /IM codex.exe /F 2>$null
+taskkill /IM codex-command-runner.exe /F 2>$null
+taskkill /IM codex-windows-sandbox-setup.exe /F 2>$null
+Start-Sleep -Seconds 1
+Write-Host "    cleanup done."
+
 $node  = $env:WC_NODE
 $cli   = $env:WC_CLI
 $proxy = $env:WC_PROXY
