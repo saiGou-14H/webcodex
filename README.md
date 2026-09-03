@@ -6,6 +6,8 @@
 
 Ask your assistant to inspect a repository, modify code, run tests, use Git, or investigate a failure. Your repository stays on the machine where it already lives; you do not need to move the project into a hosted workspace just to use an AI coding agent.
 
+> 📖 **Formal tutorial**: a real, tested deployment (OpenAI Secure MCP Tunnel + Linux Server + Windows Runner + Coding Agent, with Linux/Windows usage and the two modes) is in the **[WebGpt full deployment & usage tutorial](docs/WEBGPT_DEPLOYMENT.zh-CN.md)**. For everyday development, prefer **Path A (the model drives the project directly through MCP core tools)**.
+
 ## Start using WebCodex
 
 ### Everyday development: full WebCodex (recommended)

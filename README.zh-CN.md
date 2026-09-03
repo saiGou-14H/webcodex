@@ -6,6 +6,8 @@
 
 你可以直接让 AI 理解项目、修改代码、运行测试、检查 Git 或排查问题。仓库仍然留在原来的机器上，不需要为了使用 WebCodex 把整个项目搬到托管环境里。
 
+> 📖 **正式教程**：本项目实测部署（OpenAI Secure MCP Tunnel + Linux Server + Windows Runner + Coding Agent，含 Linux/Windows 使用教程与两种模式）见 **[WebGpt 完整部署与使用教程](docs/WEBGPT_DEPLOYMENT.zh-CN.md)**。日常开发推荐其中的**路径 A（模型直接使用 MCP 核心工具）**。
+
 ## 开始使用
 
 ### 日常使用：完整 WebCodex（推荐）

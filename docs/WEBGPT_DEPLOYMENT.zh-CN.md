@@ -4,6 +4,31 @@
 > ChatGPT 通过 OpenAI Secure MCP Tunnel（`WebGpt`）连接，并开启 WebCodex 的 **Coding Agent（ACP / Codex 委托）**。
 > 所有截图/命令中的凭证一律以占位符 `<REDACTED>` 表示，请勿在仓库中提交真实 token。
 
+## 0. 快速开始（三分钟）
+
+前提：Linux 侧 Server/Tunnel/Runner 已就绪（见下文），Windows 上已放好 `webgpt-client.bat` + `webgpt-client.ps1` + `codex-acp-proxy.js` + `webcodex-cli-win\bin\webcodex.js`（都在 `D:\WebGpt`）。
+
+**Windows 只需双击 `D:\WebGpt\webgpt-client.bat`**，它会自动：
+
+```text
+[0] killing previous WebGpt/Codex processes...   ← 自动杀上次残留进程
+[1-4] 探测 node.exe / webcodex-cli / proxy / agent.toml
+[5] 探测真实 codex.exe（%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe）
+[6] 回填 agent.toml 的 [acp]（executable=node.exe、args=proxy、env_from_env 含 PATH+CODEX_CMD）
+[7] 设置 HOME / CODEX_HOME / CODEX_CMD
+[8] 前台启动 Runner（jsonrpc2 注册成功，actual_transport=polling/websocket）
+```
+
+之后在 Chatgpt 里连 WebGpt，用 **路径 A（核心工具）** 直接开发项目即可（见「使用教程」）。
+
+Linux 侧日常只用三条状态查询：
+
+```bash
+webcodex ops agents --env-file /etc/webcodex/webcodex.env   # 应看到 Linux + Windows 两个 online
+webcodex server status --env-file /etc/webcodex/webcodex.env
+cat /root/.config/openai/tunnel-health.url | xargs -I{} curl -sS -o /dev/null -w "readyz=%{http_code}\n" {}/readyz
+```
+
 ## 1. 整体架构
 
 ```mermaid
@@ -117,18 +142,23 @@ permission_timeout_secs = 5
 [[acp.agents]]
 id = "codex"
 name = "Codex"
-executable = "<node.exe 绝对路径>"   # 例如 C:\Program Files\nodejs\node.exe（必须绝对路径）
+executable = "<node.exe 绝对路径>"        # 例如 C:\nvm4w\nodejs\node.exe（必须绝对路径）
 args = ["D:\\WebGpt\\codex-acp-proxy.js"]
-env_from_env = { "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME", "PATH" = "PATH" }
+env_from_env = { "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME", "PATH" = "PATH", "CODEX_CMD" = "CODEX_CMD" }
 allowed_config_options = []
 ```
 
 > 关键点：
 > - `executable` 必须是 **node.exe 的绝对路径**（不能是 `node` 或 .js）。
 > - 代理 `.js` 放在 `args`。
-> - `env_from_env` 必须含 **`PATH`**（否则代理内 `spawn codex` 报 `ENOENT`）。
+> - `env_from_env` 必须含 **`PATH`**（否则代理内 `spawn codex` 报 `ENOENT`），并含 **`CODEX_CMD`**（把 codex 真实路径透传给代理，代理才能用 node/真实 exe 启动 codex）。
+> - **推荐用 `webgpt-client.bat` 自动生成以上 `[acp]`**（它探测真实 node/codex 并回填），无需手写。
 
-### 3.2 Runner 进程环境变量（启动 Runner 的 PowerShell）
+### 3.2 一键启动器：`webgpt-client.bat`（推荐）
+
+文件：`deploy/webgpt-client.bat` + `deploy/webgpt-client.ps1`（放 `D:\WebGpt`）。双击即自动完成：杀残留进程 → 探测 node/codex → 回填 `[acp]` → 设 env → 前台启动 Runner。不会再出现手写路径/TOML 转义/二次配置的问题。
+
+### 3.3 Runner 进程环境变量（等价手工方式；推荐直接用 3.2 启动器）
 
 ```powershell
 $env:HOME = $env:USERPROFILE
@@ -139,18 +169,25 @@ $env:CODEX_HOME = "$env:USERPROFILE\.codex"
 
 ## 4. Coding Agent（ACP）代理
 
-文件：`deploy/webcodex-acp-proxy.js`（本仓库）。实现 WebCodex Runner 期望的 **ACP v1（JSON-RPC 2.0 + NDJSON stdio）**：
+文件：`deploy/webcodex-acp-proxy.js`（本仓库）。实现 WebCodex Runner 期望的 **ACP v1（`agent_client_protocol_schema::v1`，JSON-RPC 2.0 + NDJSON stdio）**：
 
 | 方法 | 说明 |
 |---|---|
 | `initialize` | 返回 `{protocolVersion:1, agentCapabilities:{}}` |
 | `session/new` | 返回 `{sessionId, agentCapabilities:{}}` |
 | `session/set_config_option` | 校验/接受配置 |
-| `session/prompt` | 调 `codex exec`，流式回 `session/update`，回 result |
-| `session/cancel` | 取当前 run |
+| `session/prompt` | 调 `codex exec --sandbox`，指令写 stdin+EOF；回 **`{stopReason:"end_turn"}`**（标准 `PromptResponse`），流式 `session/update agent_message_chunk` |
+| `session/cancel` | 杀 codex 子进程 + 回 `stopReason:"cancelled"`（确定终态） |
+
+关键实现（对齐 ACP v1）：
+- `CODEX_CMD` 若是 **`.js`** → 用 `process.execPath`（node）跑；若是**绝对路径存在**（真实 `codex.exe`）→ **直接 spawn（不 shell）**；否则裸命令 → Windows 用 shell 解析 `.cmd`/`.ps1`。
+- 指令经 **stdin 写入并 EOF**，避免 codex 卡在 `Reading additional input from stdin...`。
+- 默认 `--sandbox danger-full-access`（`CODEX_SANDBOX` 可覆盖）。
+- `session/prompt` 的 response 是标准 `PromptResponse`：字段名 camelCase `stopReason`、值 snake_case `end_turn`/`cancelled`/`max_tokens`/`max_turn_requests`/`refusal`。
 
 环境变量：
-- `CODEX_CMD`：codex 命令路径，默认 `codex`。
+- `CODEX_CMD`：codex 入口（node codex.js 路径或真实 codex.exe 绝对路径）；默认 `codex`。
+- `CODEX_SANDBOX`：codex 沙箱，默认 `danger-full-access`。
 - `CODEX_ACP_STUB=1`：stub 输出，用于冒烟测试（无需 codex）。
 
 ## 5. 关键配置项（`[acp]` 生效机制）
@@ -176,7 +213,11 @@ webcodex tokens create --server-url http://127.0.0.1:8080 --username saigou \
 | `npm install` 下载 win 二进制 `ECONNRESET` / `EPERM rename` | GitHub 下载被重置；Defender 锁目录 | 从本机下载站拉 **自包含 CLI 包**（免 npm）+ `WEBCODEX_BINARY_DIR` / 手动放 `vendor\bin` |
 | Windows Runner `websocket connect timed out` | Cloudflare 不代理 websocket 升级（返回 200 而非 101） | `transport` 改为 **`polling`** |
 | `coding_agent_spawn_failed (os error 3)` | `[acp].agents.executable` 不是绝对路径 / 不存在 | 设为 node.exe 绝对路径 |
-| `spawn codex ENOENT` | 代理子进程 env 被 `env_clear()`，无 `PATH`；或未装 codex CLI | `env_from_env` 加 `PATH`；`npm i -g @openai/codex` 或设 `CODEX_CMD` |
+| `spawn codex ENOENT` | 代理子进程 env 被 `env_clear()`，无 `PATH`；或 `codex` 是 `.cmd/.ps1` shim，Node 找不到 `codex.exe` | `env_from_env` 加 `PATH`；并把 `CODEX_CMD` 设为**真实 codex.exe 绝对路径**或 codex.js（启动器已自动探测） |
+| `spawn("codex.cmd")` → `EINVAL` | `.cmd` 批处理不是 PE，Node 直接 spawn 报 EINVAL | 用真实 `codex.exe` 绝对路径或经 shell 执行 |
+| 双击 bat 报 `taskkill: 没找到进程` 并退出 | `$ErrorActionPreference=Stop` 把 taskkill 未命中当错误 | 启动器已改为 `cmd /c "taskkill ... >nul 2>nul"` 静默 |
+| `coding_agent_cancel_terminal_missing` / `outcome_unknown` | ACP 终态没回传（或 run 被取消/超时，或 Codex 后端 API 挂） | 用 ACP 对齐的代理（`stopReason`/cancel 处理）；并确保 Codex Responses API 健康；**日常用路径 A** |
+| Codex Responses API `502`（如 `ai.saigou.work/v1/responses`） | Codex 后端 API 不可用 | 修后端或把 Codex 指向 OpenAI 官方 API；**不要因此阻塞，用路径 A 核心工具开发** |
 | `required ACP environment source 'HOME'/'CODEX_HOME' is missing` | Runner 进程缺这些 env | 给 Runner 进程设置 `HOME`/`CODEX_HOME`（systemd `Environment=`） |
 | `_agent does not support coding_agent_runs` | `[acp].agents` 为空 | 配置 `[acp]` + 至少一个 agent |
 | 网关 403（coding_agent） | 缺 `coding_agent:run` scope | `tokens create --scope ... coding_agent:run` + 换 tunnel bearer |
@@ -249,3 +290,55 @@ WebGPT MCP
 才用路径 B。
 
 > 已知问题（本部署实测）：Coding Agent 依赖的 Codex Responses API 曾返回 502（`ai.saigou.work/v1/responses`），导致 `coding_agent_start` 虽能 spawn/进入 running，但终态无法确认（`outcome_unknown`）。因此**不要因为 Coding Agent 未完成就阻塞**——直接用路径 A 的核心工具即可完成开发。
+
+## 9. 使用教程（Linux / Windows）
+
+### 9.1 Linux（服务器侧运维）
+
+**服务管理**（三个 systemd 服务，开机自启）
+```bash
+systemctl status webcodex.service webcodex-runner.service webcodex-tunnel.service   # 都 active
+systemctl restart webcodex-runner.service     # 改 agent.toml 后重启 Runner
+```
+
+**状态 / 健康**
+```bash
+webcodex ops agents --env-file /etc/webcodex/webcodex.env      # Linux + Windows 两个 runner online
+webcodex server status --env-file /etc/webcodex/webcodex.env   # HTTP reachable、在线数、configured_public_url
+cat /root/.config/openai/tunnel-health.url | xargs -I{} curl -sS -o /dev/null -w "readyz=%{http_code}\n" {}/readyz
+```
+
+**在 Linux Runner 上注册项目**（@webgpt 用 `work_on_project` path 形式自动注册）
+```text
+work_on_project(client_id=<Linux runner client_id>, path=/root/project-development/A2AMesh, instruction=...)
+```
+Linux runner 已 `allowed_roots=["/"]`，任意绝对路径可注册。
+
+**审计 / 排查**
+```bash
+grep -iE "error|poll failed|acp" /root/.config/openai/tunnel-client.log | tail
+journalctl -u webcodex-runner.service --no-pager -n 40 | grep -iE "acp|coding.agent|registered"
+```
+
+### 9.2 Windows（执行侧使用）
+
+**一键启动（推荐）**：`D:\WebGpt\webgpt-client.bat` → 自动杀残留 + 回填 `[acp]` + 设 env + 前台启动 Runner。窗口保持打开；停止用 `Ctrl-C`。
+
+**注册项目**：在 Chatgpt 里让 @webgpt：
+```text
+用 work_on_project 打开 D:\work\dj-product（path 形式，client_id 用 Windows 的 pan-...）。
+```
+
+**路径 A：直接开发（推荐）**——@webgpt 用核心工具：
+```text
+1) work_on_project + project_overview 摸清结构；
+2) search_project_text 搜「督办/三会一课」，列出 Controller/Service/Mapper/Entity/DTO/VO/migration + 调用链；
+3) 对照 PRD 列已有/缺失接口与状态机缺口；
+4) read_file 拿 SHA256 → apply_text_edits 修改（改前 show_changes 确认）；复杂用 apply_patch_checked；
+5) run_process/run_script 跑 mvn test（Java 17），document_diagnostics 检查；
+6) 汇总改动/PRD 覆盖/测试结果/剩余问题。
+```
+
+**路径 B（可选）：委托 Codex**——`coding_agent_start(project, provider_id=codex, idempotency_key, instruction)` + `coding_agent_observe`；需 Codex 后端 API 健康。
+
+**验证**：run 后 `list_jobs`/`coding_agent_observe`，看到确定 `stop_reason`（`end_turn`/`cancelled`）而非 `outcome_unknown`。
