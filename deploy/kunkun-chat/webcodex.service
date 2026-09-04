@@ -1,0 +1,17 @@
+[Unit]
+Description=WebCodex Runtime
+Requires=webcodex.socket
+After=network-online.target webcodex.socket
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/webcodex/webcodex.env
+ExecStart=/usr/lib/node_modules/@yyjeqhc/webcodex/vendor/bin/webcodex-server
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=330s
+WorkingDirectory=/var/lib/webcodex
+
+[Install]
+WantedBy=multi-user.target

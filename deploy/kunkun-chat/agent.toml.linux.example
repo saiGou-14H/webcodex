@@ -1,0 +1,47 @@
+server_url = "http://127.0.0.1:8080"
+token = "<REDACTED>"
+client_id = "ser181551030119-a395f3e03be84147"
+owner = "saigou"
+transport = "websocket"
+poll_interval_ms = 1000
+projects_dir = "/etc/webcodex/http_127.0.0.1_8080/saigou/projects.d"
+
+[capabilities]
+shell = true
+file_read = true
+file_write = true
+git = true
+jobs = true
+async_jobs = true
+async_shell_jobs = true
+ssh_shell = false
+persistent_shell = false
+ssh_persistent_shell = false
+structured_validation_argv = true
+structured_process_argv = true
+structured_script_payload = true
+structured_execution_jobs = true
+lsp_read_only_navigation = true
+lsp_call_hierarchy = true
+sandbox_inspect_commands = false
+project_lifecycle = false
+project_path_registration = false
+
+[policy]
+allow_raw_shell = true
+allow_cwd_anywhere = false
+allowed_roots = ["/"]
+max_timeout_secs = 3600
+max_output_bytes = 262144
+
+[acp]
+max_concurrent_runs = 1
+permission_timeout_secs = 5
+
+[[acp.agents]]
+id = "codex"
+name = "Codex"
+executable = "/opt/webcodex-acp/codex-acp-proxy.py"
+args = []
+env_from_env = { "PATH" = "PATH", "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME" }
+allowed_config_options = []

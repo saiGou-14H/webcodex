@@ -1,0 +1,47 @@
+server_url = "https://chatgpt.kunkun.chat"
+token = "<REDACTED>"
+client_id = "pan-0cdfdbb9da7c4ddd"
+owner = "saigou"
+transport = "websocket"
+poll_interval_ms = 1000
+projects_dir = '\\?\C:\Users\Administrator\AppData\Roaming\webcodex\https_chatgpt.kunkun.chat\saigou\projects.d'
+
+[capabilities]
+shell = true
+file_read = true
+file_write = true
+git = true
+jobs = true
+async_jobs = true
+async_shell_jobs = true
+ssh_shell = false
+persistent_shell = false
+ssh_persistent_shell = false
+structured_validation_argv = true
+structured_process_argv = true
+structured_script_payload = true
+structured_execution_jobs = true
+lsp_read_only_navigation = true
+lsp_call_hierarchy = true
+sandbox_inspect_commands = false
+project_lifecycle = false
+project_path_registration = false
+
+[policy]
+allow_raw_shell = true
+allow_cwd_anywhere = false
+allowed_roots = ['D:\work']
+max_timeout_secs = 3600
+max_output_bytes = 262144
+
+[acp]
+max_concurrent_runs = 1
+permission_timeout_secs = 5
+
+[[acp.agents]]
+id = "codex"
+name = "Codex"
+executable = "C:\\nvm4w\\nodejs\\node.exe"
+args = ["D:\\WebGpt\\codex-acp-proxy.js"]
+env_from_env = { "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME" }
+allowed_config_options = []

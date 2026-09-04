@@ -1,0 +1,21 @@
+# WARNING: --allow-root-runner was explicitly accepted; project commands run as root.
+[Unit]
+Description=WebCodex Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart="/usr/lib/node_modules/@yyjeqhc/webcodex/vendor/bin/webcodex-runner" "--config" "/etc/webcodex/http_127.0.0.1_8080/saigou/agent.toml"
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+Environment=RUST_LOG=info
+Environment=CODEX_HOME=/root/.codex
+Environment=HOME=/root
+WorkingDirectory=/root
+
+[Install]
+WantedBy=multi-user.target

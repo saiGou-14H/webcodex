@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenAI Secure MCP Tunnel Client for WebCodex
+After=network-online.target webcodex.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/openai-tunnel/run-tunnel.sh
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
