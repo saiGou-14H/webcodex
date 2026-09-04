@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>桌面 Codex + 账号池模型 + WebCodex 工具 —— 结合本项目架构图</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;padding:24px;max-width:1200px;margin:auto}
+h1{font-size:20px}h2{font-size:16px;color:#79c0ff}.mermaid{background:#fff;border-radius:8px;padding:12px;margin-bottom:20px}
+.note{background:#1f2937;border:1px solid #f85149;border-radius:8px;padding:12px;color:#ffa198}</style>
+</head><body>
+<h1>桌面 Codex（账号池模型）+ WebCodex 工具 —— 结合本项目架构</h1>
+
+<h2>整体架构（模型 / 工具 分层）</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph D["桌面 Codex（客户端 / 编排器）"]
+        CX["Codex 桌面/CLI"]
+        ORCH["编排：LLM 给 tool_call → 执行工具 → 结果回喂模型"]
+    end
+
+    subgraph M["模型层（大脑）—— 账号池 + OpenAI 格式接口"]
+        GW["账号池网关\nOpenAI 格式接口\n/v1/responses · /v1/chat/completions"]
+        POOL["账号池 A/B/C\n（各自 OpenAI 账号）"]
+        MB["模型后端\nResponses / Chat"]
+    end
+
+    subgraph T["工具层（手）—— 本项目 WebCodex"]
+        WX["WebCodex MCP\n/mcp · Bearer\nread/edit/run/git/jobs"]
+        SRV["WebCodex Server\n127.0.0.1:8080"]
+        RUN["Runner\nLinux / Windows\nallowed_root"]
+        PROJ["项目\nA2AMesh · /root · D:\\work\\dj-product"]
+    end
+
+    CX -->|"① 模型请求（OpenAI 格式）"| GW
+    GW --> POOL --> MB
+    MB -->|"模型回复（含 tool_call / 文本）"| ORCH
+    ORCH -->|"② 工具调用（MCP）"| WX
+    WX --> SRV --> RUN --> PROJ
+    PROJ -->|"③ 工具结果（文件/diff/输出）"| ORCH
+    ORCH -->|"④ 结果回喂模型（继续推理）"| GW
+</div>
+
+<h2>一次完整调用（时序）</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant C as 桌面 Codex
+    participant G as 账号池网关
+    participant M as 模型后端
+    participant W as WebCodex MCP
+    participant R as Runner→项目
+    C->>G: POST /v1/responses（OpenAI 格式）
+    G->>M: 路由到账号池内账号
+    M-->>G: 回复（含 tool_call）
+    G-->>C: OpenAI 格式响应
+    C->>W: 调 MCP 工具（read_file/apply_text_edits/run_process…）
+    W->>R: 路由到 Runner → 项目执行
+    R-->>C: 工具结果（内容/diff/输出）
+    C->>G: 把工具结果再喂给模型
+    M-->>C: 下一步 tool_call / 最终答复
+</div>
+
+<div class="note">
+⚠️ 风险提示：本图把「账号池 + OpenAI 格式接口」作为<b>模型层</b>。技术上可画、可搭，但<b>违反 OpenAI 条款、封号风险高</b>，且 <b>ChatGPT 网页账号不是干净的 OpenAI API 后端</b>。
+<b>合规替代</b>：模型层改用<b>自托管 vLLM / Ollama + LiteLLM</b>（OpenAI 兼容接口），或用单个官方 API key；工具层（WebCodex）不变。这样仍是「桌面 Codex 模型 + WebCodex 工具」的分层，但不踩账号池的坑。
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:'default'});</script>
+</body></html>

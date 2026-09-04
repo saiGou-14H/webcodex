@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>桌面 Codex + 账号池模型 + WebCodex 工具 —— 详细架构 v2（结合前置条件）</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;padding:24px;max-width:1200px;margin:auto}
+h1{font-size:20px}h2{font-size:16px;color:#79c0ff}.mermaid{background:#fff;border-radius:8px;padding:12px;margin-bottom:20px;overflow:auto}
+.note{background:#1f2937;border:1px solid #f85149;border-radius:8px;padding:12px;color:#ffa198}
+.ok{background:#12291c;border:1px solid #3fb950;border-radius:8px;padding:12px;color:#7ee787}</style>
+</head><body>
+<h1>桌面 Codex（账号池模型）+ WebCodex 工具 —— 详细架构 v2</h1>
+
+<h2>整体架构（含“Windows 注册到 Server”前提 与 两层鉴权）</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph M["模型层（大脑）—— 账号池 + OpenAI 格式接口"]
+        GW["账号池网关\nPOST /v1/responses"]
+        POOL["账号 A · B · C"]
+        MB["模型后端（Responses/Chat）"]
+    end
+    subgraph D["桌面 Codex（编排器）"]
+        CX["Codex 桌面/CLI\nOPENAI_BASE_URL → 账号池网关"]
+    end
+    subgraph WEB["WebCodex 平台（工具层 /mcp）"]
+        BEARER["WebCodex Bearer（Wc_pat / 用户）"]
+        SRV["WebCodex Server\n127.0.0.1:8080"]
+        TUN["OpenAI Tunnel（WebGpt）"]
+        PUB["公网 /mcp + wc_pat（备选）"]
+    end
+    subgraph WIN["Windows（Runner + 项目）"]
+        REG["Windows Runner 注册\nclient_id=pan-… · wc_agent · allowed_root=D:\\work"]
+        PROJ["项目 D:\\work\\dj-product\n（work_on_project 注册）"]
+    end
+    CX -->|"① 模型请求"| GW
+    GW --> POOL --> MB
+    MB -->|"② 模型回复（含 tool_call）"| CX
+    CX -->|"③ MCP 工具调用（Bearer）"| BEARER
+    BEARER --> SRV
+    TUN -.->|"入口A（隧道注入 Bearer）"| SRV
+    PUB -.->|"入口B（每账号 wc_pat）"| SRV
+    SRV -->|"④ 路由到已注册 Runner"| REG
+    REG -->|"注册关系"| PROJ
+    PROJ -->|"⑤ 工具结果（文件/diff/输出）"| CX
+    CX -->|"⑥ 结果回喂模型"| GW
+</div>
+
+<h2>一次「修改本地文件」的完整调用（时序）</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant C as 桌面 Codex
+    participant G as 账号池网关
+    participant M as 模型后端(池内账号)
+    participant W as WebCodex MCP
+    participant S as WebCodex Server
+    participant R as Windows Runner
+    participant P as 项目(dj-product)
+    Note over C,S: 前置：① Windows 已 login 注册为 Runner ② work_on_project 已注册项目
+    C->>G: ① POST /v1/responses
+    G->>M: ② 选账号A 推理
+    M-->>G: ③ tool_call
+    G-->>C: ④ 回复(含 tool_call)
+    C->>W: ⑤ MCP: apply_text_edits(project=…, session_id=…)
+    W->>S: ⑥ 鉴权(Bearer) 路由
+    S->>R: ⑦ 该 Runner 执行
+    R->>P: ⑧ 改本地文件(带 expected_sha256)
+    P-->>R: ⑨ 结果
+    R-->>S: ⑩ 工具结果
+    S-->>W: ⑪
+    W-->>C: ⑫ 工具结果/内容/diff
+    C->>G: ⑬ 结果回喂模型
+    M-->>C: ⑭ 下一步 tool_call / 完成
+</div>
+
+<div class="ok">
+✅ 前提（工具能改本地文件）：
+<br/>· Windows 机已 <b>login 注册为 Runner</b>（client_id=pan-…、wc_agent 令牌、allowed_root=D:\work）；
+<br/>· 项目 <b>D:\work\dj-product 已注册</b>（work_on_project → projects.d）；
+<br/>· 桌面 Codex 有能调 WebCodex /mcp 的 <b>WebCodex Bearer</b>。
+</div>
+
+<div class="note">
+⚠️ 两层鉴权：<b>模型层</b>=账号池里的账号（谁在“想”）；<b>工具层</b>=WebCodex Bearer（谁在“做”）。二者独立。
+<br/>· 桌面 Codex 用账号池当模型、WebCodex 当工具 → 工具调用用的是 <b>WebCodex Bearer，不是池账号</b>，池账号本身不必进 Tunnel；
+<br/>· 若想让<b>每个池账号各自</b>调 MCP → 每账号需<b>自己的 WebCodex 身份(Bearer)</b>（各自 Tunnel，或公网 /mcp + 每账号 wc_pat）；
+<br/>· <b>单隧道(WebGpt)只注入一个 saigou 的 Bearer</b> → 多账号共用 = 全算 saigou，<b>无账号隔离</b>；
+<br/>· 账号池作为模型层有 <b>违反 OpenAI 条款/封号</b> 风险；合规可改用<b>自托管 vLLM/Ollama + LiteLLM</b>（工具层 WebCodex 不变）。
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:'default'});</script>
+</body></html>

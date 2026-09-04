@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>账号池 + OpenAI 格式接口 + 桌面 Codex 架构图</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;padding:24px;max-width:1200px;margin:auto}
+h1{font-size:20px}h2{font-size:16px;color:#79c0ff}.mermaid{background:#fff;border-radius:8px;padding:12px;margin-bottom:20px}
+.note{background:#1f2937;border:1px solid #f85149;border-radius:8px;padding:12px;color:#ffa198}</style>
+</head><body>
+<h1>账号池 + OpenAI 格式接口 + 桌面 Codex（方案流程图）</h1>
+<h2>整体架构</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph CLIENT["桌面端 Codex（客户端）"]
+        CX["Codex 桌面/CLI<br/>OPENAI_BASE_URL → 账号池网关"]
+    end
+    subgraph GW["账号池网关（Pool Gateway）"]
+        API["OpenAI 格式接口<br/>POST /v1/chat/completions<br/>POST /v1/responses"]
+        LB["负载均衡 / 轮询<br/>round-robin / 按额度"]
+        AUTH["当前账号选择<br/>路由到池内任意一个"]
+    end
+    subgraph POOL["账号池（多个 GPT/OpenAI 账号）"]
+        A["账号 A"]; B["账号 B"]; C["账号 C"]
+    end
+    subgraph BACKEND["模型后端（对应账号）"]
+        BA["账号 A → Responses/Chat"]; BB["账号 B → Responses/Chat"]; BC["账号 C → Responses/Chat"]
+    end
+    CX -->|"OpenAI 格式请求"| API
+    API --> LB --> AUTH --> POOL
+    POOL --> BACKEND
+    BA -->|"返回"| API
+    BB -->|"返回"| API
+    BC -->|"返回"| API
+    API -->|"结果回桌面端"| CX
+</div>
+
+<h2>调用流程（时序）</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant D as 桌面 Codex
+    participant G as 账号池网关
+    participant R as 路由/负载均衡
+    participant P as 账号池 A/B/C
+    participant S as 模型后端
+    D->>G: POST /v1/responses (OpenAI 格式)
+    G->>R: 选一个账号（轮询/额度）
+    R->>P: 请求账号 A
+    P->>S: 调用该账号的 Responses/Chat
+    S-->>P: 推理结果
+    P-->>G: 返回
+    G-->>D: OpenAI 格式响应
+    D->>D: 项目/编码处理
+</div>
+
+<div class="note">
+⚠️ 风险提示：该「账号池 + OpenAI 格式接口」方案技术上可搭，但<b>违反 OpenAI 条款、封号风险高</b>，且 <b>ChatGPT 网页账号不是干净的 OpenAI API 后端</b>。
+合规替代：桌面 Codex 接<b>自托管 vLLM/Ollama + LiteLLM</b> 的 OpenAI 兼容接口，或用单个官方 API key。
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:'default'});</script>
+</body></html>
