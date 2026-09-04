@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebGpt 系统架构图</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;padding:24px;max-width:1200px;margin:auto}
+h1{font-size:20px}pre{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;overflow:auto}
+.mermaid{background:#fff;border-radius:8px;padding:12px}</style>
+</head><body>
+<h1>WebGpt（chatgpt.kunkun.chat）系统架构图</h1>
+<div class="mermaid">
+flowchart TB
+    subgraph G["ChatGPT（OpenAI 账号）"]
+        C1["WebGpt Connector<br/>Connection: Tunnel · Auth: None"]
+    end
+    subgraph O["OpenAI 控制面"]
+        CP["api.openai.com<br/>/v1/tunnels/&lt;id&gt;/poll·response·metadata"]
+    end
+    subgraph L["Linux 公网服务器 66.92.18.39"]
+        TC["tunnel-client<br/>webcodex-tunnel.service<br/>注入 WebCodex Bearer"]
+        S["WebCodex Server<br/>webcodex.service+.socket<br/>127.0.0.1:8080"]
+        LWR["Linux Runner<br/>webcodex-runner.service<br/>root · allowed_roots=/"]
+        NG["Nginx + Cloudflare + Let's Encrypt<br/>chatgpt.kunkun.chat"]
+        DL["/webcodex-dl/ 静态<br/>分发客户端包"]
+    end
+    subgraph W["Windows（Runner+项目+Codex）"]
+        WR["Windows Runner<br/>webgpt-client.bat（polling）<br/>allowed_root=D:\\work"]
+        ACP["codex-acp-proxy.js<br/>ACP v1 stdio"]
+        CX["codex（真实 codex.exe）"]
+        P["项目 D:\\work\\dj-product"]
+    end
+    subgraph LP["Linux 项目"]
+        LP1["A2AMesh"]
+        LP2["/root"]
+    end
+    C1 -->|"Tunnel 无认证"| CP
+    CP -->|"长轮询/命令下发"| TC
+    TC -->|"127.0.0.1:8080/mcp（注入 Bearer）"| S
+    S <-->|"WebSocket/polling（agent token）"| LWR
+    S <-->|"polling（https://chatgpt.kunkun.chat）"| WR
+    LWR --> LP1
+    LWR --> LP2
+    WR --> P
+    S -->|"coding_agent_start(provider=codex)"| WR
+    WR -->|"spawn"| ACP
+    ACP -->|"codex exec --sandbox"| CX
+    NG -->|"反代"| S
+    NG -.->|"公网 /mcp Bearer（备选）"| S
+    NG -.-> DL
+</div>
+<h1>两种使用模式</h1>
+<div class="mermaid">
+flowchart LR
+    subgraph A["路径 A（推荐）核心工具"]
+        AM["模型 → WebCodex MCP<br/>read/edit/run/show_changes"]
+    end
+    subgraph B["路径 B（可选）委托 Codex"]
+        BM["模型 → coding_agent_start<br/>→ Runner → codex-acp-proxy → codex"]
+    end
+    A -->|"直通"| R["Runner → 项目"]
+    B -->|"委托"| R
+</div>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:'default'});</script>
+</body></html>
