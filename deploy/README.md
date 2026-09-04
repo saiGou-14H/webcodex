@@ -1,5 +1,7 @@
 # WebGpt（chatgpt.kunkun.chat）部署清单与文件对照
 
+[简体中文](README.md) | [English](README.en.md)
+
 > 完整教程见 [`../docs/WEBGPT_DEPLOYMENT.zh-CN.md`](../docs/WEBGPT_DEPLOYMENT.zh-CN.md)。
 > 本文只给「哪台机器、放哪些文件、按什么顺序、怎么验证」的速览清单。所有 token 均脱敏为 `<REDACTED>`。
 

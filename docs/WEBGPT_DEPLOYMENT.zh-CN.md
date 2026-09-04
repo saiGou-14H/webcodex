@@ -38,6 +38,7 @@ deploy/server/   服务器（Linux）侧部署文件：webcodex.service/.socket�
 deploy/client/   客户端（Windows Runner）侧脚本：webgpt-client.bat/.ps1、codex-acp-proxy.js、
                  agent.toml.windows.example
 ```
+> 📋 **部署清单 / 哪台机器放哪个文件夹**（中英双语）：[`deploy/README.md`](../deploy/README.md)（简体中文）/ [`deploy/README.en.md`](../deploy/README.en.md)（English）。
 
 ## 1. 整体架构
 
