@@ -29,6 +29,16 @@ webcodex server status --env-file /etc/webcodex/webcodex.env
 cat /root/.config/openai/tunnel-health.url | xargs -I{} curl -sS -o /dev/null -w "readyz=%{http_code}\n" {}/readyz
 ```
 
+### 仓库文件结构（server / client 分开）
+
+```
+deploy/server/   服务器（Linux）侧部署文件：webcodex.service/.socket、webcodex-runner.service、
+                 webcodex-tunnel.service、run-tunnel.sh、nginx.chatgpt.kunkun.chat.conf、
+                 webcodex.env.example、agent.toml.linux.example
+deploy/client/   客户端（Windows Runner）侧脚本：webgpt-client.bat/.ps1、codex-acp-proxy.js、
+                 agent.toml.windows.example
+```
+
 ## 1. 整体架构
 
 ```mermaid
@@ -156,7 +166,7 @@ allowed_config_options = []
 
 ### 3.2 一键启动器：`webgpt-client.bat`（推荐）
 
-文件：`deploy/webgpt-client.bat` + `deploy/webgpt-client.ps1`（放 `D:\WebGpt`）。双击即自动完成：杀残留进程 → 探测 node/codex → 回填 `[acp]` → 设 env → 前台启动 Runner。不会再出现手写路径/TOML 转义/二次配置的问题。
+文件：`deploy/client/webgpt-client.bat` + `deploy/client/webgpt-client.ps1`（放 `D:\WebGpt`）。双击即自动完成：杀残留进程 → 探测 node/codex → 回填 `[acp]` → 设 env → 前台启动 Runner。不会再出现手写路径/TOML 转义/二次配置的问题。
 
 ### 3.3 Runner 进程环境变量（等价手工方式；推荐直接用 3.2 启动器）
 
@@ -169,7 +179,7 @@ $env:CODEX_HOME = "$env:USERPROFILE\.codex"
 
 ## 4. Coding Agent（ACP）代理
 
-文件：`deploy/webcodex-acp-proxy.js`（本仓库）。实现 WebCodex Runner 期望的 **ACP v1（`agent_client_protocol_schema::v1`，JSON-RPC 2.0 + NDJSON stdio）**：
+文件：`deploy/client/webcodex-acp-proxy.js`（本仓库）。实现 WebCodex Runner 期望的 **ACP v1（`agent_client_protocol_schema::v1`，JSON-RPC 2.0 + NDJSON stdio）**：
 
 | 方法 | 说明 |
 |---|---|
