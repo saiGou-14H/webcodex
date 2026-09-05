@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-3"
+$script:WcScriptStamp = "2026-09-05-4"
 
 $script:WcConfigCommands = @(
   'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
