@@ -320,7 +320,8 @@ function Pair-WcClient {
   # 1) client-side pairing create (token via env var, never on the command line)
   $env:WEBCODEX_TOKEN = $tok
   $pairCmd = @($node, $cli, 'pairing', 'create', '--server-url', $server, '--username', $user,
-    '--ttl-secs', '600', '--json') + (Get-WcCliProxyArgs)
+    '--ttl-secs', '600', '--json')
+  $pairCmd += @(Get-WcCliProxyArgs)
   if ($ClientId) { $pairCmd += @('--client-id', $ClientId) }
   Write-Host ("[pair] minting one-time code via server: " + $server)
   try {
@@ -346,7 +347,8 @@ function Pair-WcClient {
   Write-Host ("[pair] one-time code minted (masked: " + (Mask-Secret $pcode) + "), expires " + [string]$pc.expires_at)
 
   # 2) auto login (consumes the code exactly once, right here)
-  $loginCmd = @($node, $cli, 'login', $server, '--code', $pcode) + (Get-WcCliProxyArgs)
+  $loginCmd = @($node, $cli, 'login', $server, '--code', $pcode)
+  $loginCmd += @(Get-WcCliProxyArgs)
   if ($did) { $loginCmd += @('--device', $did) }
   if ($allowedRoot) { $loginCmd += @('--allowed-root', $allowedRoot) }
   Write-Host "[pair] logging in (code consumed on this machine)..."
@@ -430,9 +432,11 @@ function Add-WcMcp {
   Write-Host ("[mcp] minting token: webcodex tokens create-local (server=" + $server + ", user=" + $user + ")")
   $env:WEBCODEX_ACCOUNT_CREDENTIAL = $boot
   try {
-    $r = Invoke-NativeCapture -Exe $node -Args (@($cli, 'tokens', 'create-local',
+    $mcpArgs = @($cli, 'tokens', 'create-local',
       '--server-url', $server, '--username', $user,
-      '--credential-env', 'WEBCODEX_ACCOUNT_CREDENTIAL', '--name', 'webgpt-mcp', '--scopes', $scopesCsv) + (Get-WcCliProxyArgs))
+      '--credential-env', 'WEBCODEX_ACCOUNT_CREDENTIAL', '--name', 'webgpt-mcp', '--scopes', $scopesCsv)
+    $mcpArgs += @(Get-WcCliProxyArgs)
+    $r = Invoke-NativeCapture -Exe $node -Args $mcpArgs
     $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_ACCOUNT_CREDENTIAL -ErrorAction SilentlyContinue
