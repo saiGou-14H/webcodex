@@ -11,7 +11,7 @@ Linux public server 66.92.18.39        Windows (Runner + project + Codex)
 ┌─────────────────────────┐        ┌──────────────────────────────┐
 │ WebCodex Server 127.0.0.1:8080   │ webcodex-runner (polling)      │
 │ webcodex.service / .socket        │ allowed_root=D:\work          │
-│ webcodex-runner.service (Linux)   │ webgpt-client.bat/.ps1        │
+│ webcodex-runner.service (Linux)   │ kunkun-tools.bat/.ps1        │
 │ webcodex-tunnel.service           │ codex-acp-proxy.js (ACP)      │
 │ run-tunnel.sh  ← tunnel-client    │ agent.toml (Windows)          │
 │ Nginx + Cloudflare + Let's Encrypt│ project D:\work\dj-product   │
@@ -21,7 +21,7 @@ Linux public server 66.92.18.39        Windows (Runner + project + Codex)
 | Machine | Copy from `deploy/` | Files |
 |---|---|---|
 | **Linux server** | `deploy/server/` | `webcodex.service`, `webcodex.socket`, `webcodex-runner.service`, `webcodex-tunnel.service`, `run-tunnel.sh`, `nginx.chatgpt.kunkun.chat.conf`, `webcodex.env.example`, `agent.toml.linux.example` |
-| **Windows Runner** | `deploy/client/` | `webgpt-client.bat`, `webgpt-client.ps1`, `webgpt-config.ps1`, `webgpt.env.example`, `codex-acp-proxy.js`, `agent.toml.windows.example`, `CODEX_SYSTEM_PROMPT.md`, `AGENTS.md` |
+| **Windows Runner** | `deploy/client/` | `kunkun-tools.bat`, `kunkun-tools.ps1`, `kunkun-config.ps1`, `kunkun-tools.env.example`, `codex-acp-proxy.js`, `agent.toml.windows.example`, `CODEX_SYSTEM_PROMPT.md`, `AGENTS.md` |
 
 > `server/` and `client/` have their own READMEs; upstream `deploy/*.example` are generic templates, not used here.
 
@@ -58,10 +58,10 @@ Linux public server 66.92.18.39        Windows (Runner + project + Codex)
 ## 3. Windows Runner — install checklist
 
 - [ ] **① Standalone webcodex-cli**: `D:\WebGpt\webcodex-cli-win\bin\webcodex.js` (not in this repo; use the offline bundle). `node ...webcodex.js --version` → 0.3.9.
-- [ ] **② Place client scripts**: extract `deploy/client/` into `D:\WebGpt` (`webgpt-client.bat`, `webgpt-client.ps1`, `webgpt-config.ps1`, `codex-acp-proxy.js`, `agent.toml.windows.example`, `CODEX_SYSTEM_PROMPT.md`, `AGENTS.md`).
+- [ ] **② Place client scripts**: extract `deploy/client/` into `D:\WebGpt` (`kunkun-tools.bat`, `kunkun-tools.ps1`, `kunkun-config.ps1`, `codex-acp-proxy.js`, `agent.toml.windows.example`, `CODEX_SYSTEM_PROMPT.md`, `AGENTS.md`).
 - [ ] **③ Login (if not yet)**: `node webcodex-cli-win\bin\webcodex.js login https://chatgpt.kunkun.chat --code <wc_pair> --allowed-root D:\work`; the `agent.toml` lands at `%APPDATA%\webcodex\https_chatgpt.kunkun.chat\saigou\agent.toml`.
-- [ ] **④ (Optional) Configure the connection**: `webgpt-client.bat set-server https://chatgpt.kunkun.chat saigou` → `set-bootstrap <wc_pat>` → `add-mcp` (mints a `wc_pat_xxx` and writes the Codex MCP) → `set-apikey` (cache model API key) → `mode mcp|tunnel` to pick the connection mode. Config cache: `%USERPROFILE%\.webgpt\client.json`.
-- [ ] **⑤ Double-click `webgpt-client.bat`** (auto: kill leftovers → detect node/codex → rewrite `[acp]` → set env → inject prompt → apply connection config → start Runner).
+- [ ] **④ (Optional) Configure the connection**: `kunkun-tools.bat set-server https://chatgpt.kunkun.chat saigou` → `set-bootstrap <wc_pat>` → `add-mcp` (mints a `wc_pat_xxx` and writes the Codex MCP) → `set-apikey` (cache model API key) → `mode mcp|tunnel` to pick the connection mode. Config cache: `%USERPROFILE%\.kunkun-tools\client.json`.
+- [ ] **⑤ Double-click `kunkun-tools.bat`** (auto: kill leftovers → detect node/codex → rewrite `[acp]` → set env → inject prompt → apply connection config → start Runner).
 - [ ] **⑥ Prereq**: Codex CLI installed & logged in (`codex --version`; proxy uses the real `codex.exe` absolute path or `codex.js`).
 
 ## 4. Usage
@@ -78,7 +78,7 @@ webcodex server status --env-file /etc/webcodex/webcodex.env      # HTTP reachab
 cat /root/.config/openai/tunnel-health.url | xargs -I{} curl -sS -o /dev/null -w "readyz=%{http_code}\n" {}/readyz
 ```
 ```powershell
-# Windows (in the webgpt-client.bat window)
+# Windows (in the kunkun-tools.bat window)
 # expect: registered client_id=... actual_transport=polling/websocket projects=N
 ```
 

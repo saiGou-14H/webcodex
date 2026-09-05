@@ -40,12 +40,12 @@ set "WC_AGENT=%AGENT%"
 REM --- forward all args to the launcher: config subcommands (show-config/add-mcp/...) ---
 REM --- or an AGENTS.md/instructions file path (legacy). No args = launch runner. ---
 
-if not exist "%DIR%webgpt-client.ps1" (
-  echo [x] webgpt-client.ps1 not found next to this bat.
+if not exist "%DIR%kunkun-tools.ps1" (
+  echo [x] kunkun-tools.ps1 not found next to this bat.
   pause
   exit /b 1
 )
 
 echo [.] DIR=%DIR%
-powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%webgpt-client.ps1" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%kunkun-tools.ps1" %*
 endlocal

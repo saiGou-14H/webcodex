@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 # ---- config manager (dot-source; dispatched before any process action) ----
-$cfgLib = Join-Path $PSScriptRoot "webgpt-config.ps1"
+$cfgLib = Join-Path $PSScriptRoot "kunkun-config.ps1"
 if (Test-Path $cfgLib) { . $cfgLib }
 
 # ---- subcommand dispatch: config commands first, then interactive menu, then legacy arg ----
@@ -19,8 +19,8 @@ if ($args.Count -eq 0) {
   $env:WC_INSTRUCTIONS_FILE = $args[0]
 }
 
-# ---- [0] kill leftover WebGpt/Codex processes from a previous run ----
-Write-Host "[0] killing previous WebGpt/Codex processes..."
+# ---- [0] kill leftover kunkun-tools/WebCodex/Codex processes from a previous run ----
+Write-Host "[0] killing previous kunkun-tools/WebCodex/Codex processes..."
 try {
   $cands = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
     $_.Name -match '^(node|webcodex-runner|codex)' -and $_.CommandLine -match 'codex-acp-proxy|webcodex\.js agent run|webcodex-runner'
@@ -95,7 +95,7 @@ Write-Host "[7] HOME=$env:HOME"
 Write-Host "    CODEX_HOME=$env:CODEX_HOME"
 Write-Host "    CODEX_CMD=$env:CODEX_CMD"
 
-# ---- [7b] prompt injection (shared function from webgpt-config.ps1) ----
+# ---- [7b] prompt injection (shared function from kunkun-config.ps1) ----
 if (Get-Command Invoke-WcPromptInjection -ErrorAction SilentlyContinue) {
   Invoke-WcPromptInjection
 } else {

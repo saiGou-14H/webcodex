@@ -1,17 +1,18 @@
-# webgpt-config.ps1 — WebGpt client configuration manager (dot-source library)
+# kunkun-config.ps1 — kunkun-tools configuration manager (dot-source library)
 #
-# Dot-sourced by webgpt-client.ps1; all config subcommands run through the launcher:
-#   webgpt-client.bat show-config | add-mcp | mode mcp|tunnel | mcp | tunnel |
+# Dot-sourced by kunkun-tools.ps1; all config subcommands run through the launcher:
+#   kunkun-tools.bat show-config | add-mcp | mode mcp|tunnel | mcp | tunnel |
 #   set-apikey | edit-apikey | show-apikey | get-bearer | set-server | set-bootstrap | set-tunnel
 #
-# Config cache: %USERPROFILE%\.webgpt\client.json   (override with %WC_CONFIG%)
+# Config cache: %USERPROFILE%\.kunkun-tools\client.json   (override with %WC_CONFIG%)
 # Secrets (apikey / bearer / bootstrap) are stored there and protected with icacls.
+# Migrates the legacy %USERPROFILE%\.webgpt\client.json automatically.
 
 $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-11"
+$script:WcScriptStamp = "2026-09-05-12"
 
 $script:WcConfigCommands = @(
   'menu', 'inject', 'reset', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
@@ -27,7 +28,17 @@ function Is-WcConfigCommand {
 
 function Get-WcConfigPath {
   if ($env:WC_CONFIG) { return $env:WC_CONFIG }
-  return (Join-Path (Join-Path $env:USERPROFILE ".webgpt") "client.json")
+  $newPath = Join-Path (Join-Path $env:USERPROFILE ".kunkun-tools") "client.json"
+  $oldPath = Join-Path (Join-Path $env:USERPROFILE ".webgpt") "client.json"
+  if ((Test-Path $oldPath) -and -not (Test-Path $newPath)) {
+    try {
+      $newDir = Split-Path $newPath -Parent
+      if (-not (Test-Path $newDir)) { New-Item -ItemType Directory -Path $newDir -Force | Out-Null }
+      Copy-Item $oldPath $newPath -Force
+      Remove-Item $oldPath -Force -ErrorAction SilentlyContinue
+    } catch { }
+  }
+  return $newPath
 }
 
 function ConvertFrom-JsonAsHashtable($obj) {
@@ -100,14 +111,16 @@ function Get-WcCodexCmd {
   return $null
 }
 
-# ---- webgpt.env (extracted config next to the launcher) ----
+# ---- kunkun-tools.env (extracted config next to the launcher) ----
 
 function Get-WcEnvFilePath {
   if ($env:WC_ENV_FILE) { return $env:WC_ENV_FILE }
   $base = $null
   try { $base = Split-Path -Parent $MyInvocation.MyCommand.Path } catch { }
   if (-not $base) { $base = $PSScriptRoot }
-  return (Join-Path $base "webgpt.env")
+  $newPath = Join-Path $base "kunkun-tools.env"
+  if (Test-Path $newPath) { return $newPath }
+  return (Join-Path $base "webgpt.env")   # legacy name fallback
 }
 
 function Read-WcEnvFile {
@@ -280,7 +293,7 @@ function Reset-WcAll {
     Write-Host "[reset] This will:"
     Write-Host "  1) remove the injected prompt block from %USERPROFILE%\.codex\AGENTS.md"
     Write-Host "  2) remove the 'webcodex' MCP server from Codex (codex mcp remove)"
-    Write-Host "  3) delete the local config cache %USERPROFILE%\.webgpt\client.json (backup .bak)"
+    Write-Host "  3) delete the local config cache %USERPROFILE%\.kunkun-tools\client.json (backup .bak)"
     Write-Host "  4) strip the [acp] section from agent.toml (backup .bak)"
     $c = Read-Host "Proceed? (y/N)"
     if ($c -notmatch '^y') { Write-Host "[reset] aborted."; return 1 }
@@ -373,7 +386,7 @@ function Show-WcApiKey {
   param([switch]$Reveal)
   $cfg = Load-WcConfig
   $key = [string]$cfg['apikey']
-  if (-not $key) { Write-Host "[apikey] not configured. Use: webgpt-client.bat set-apikey"; return }
+  if (-not $key) { Write-Host "[apikey] not configured. Use: kunkun-tools.bat set-apikey"; return }
   if ($Reveal) { Write-Host $key } else { Write-Host ("[apikey] (masked) " + (Mask-Secret $key)) }
 }
 
@@ -440,12 +453,12 @@ function Pair-WcClient {
   $node = $env:WC_NODE
   $cli  = $env:WC_CLI
   if (-not $cli -or -not $node) {
-    Write-Host "[x] WC_NODE/WC_CLI not set. Run via: webgpt-client.bat pair"
+    Write-Host "[x] WC_NODE/WC_CLI not set. Run via: kunkun-tools.bat pair"
     return 1
   }
   # resolve server / username / admin token / allowed root:
   #   1) config cache (set-server / set-server-token / set-allowed-root)
-  #   2) webgpt.env (extracted config, read here)
+  #   2) kunkun-tools.env (extracted config, read here)
   #   3) WC_SERVER_TOKEN env var
   $server = [string]$cfg['server_url']; if (-not $server) { $server = [string]$envMap['WEBCODEX_SERVER_URL'] }
   $user   = [string]$cfg['username'];   if (-not $user)   { $user   = [string]$envMap['WEBCODEX_USERNAME'] }
@@ -455,9 +468,9 @@ function Pair-WcClient {
   if (Test-WcPlaceholder $tok) { $tok = "" }
   $allowedRoot = [string]$cfg['allowed_root']
   if (-not $allowedRoot) { $allowedRoot = [string]$envMap['WEBCODEX_ALLOWED_ROOT'] }
-  if (-not $server) { Write-Host "[x] server_url not set. Use: webgpt-client.bat set-server <url> [username] or fill webgpt.env WEBCODEX_SERVER_URL"; return 1 }
-  if (-not $user)   { Write-Host "[x] username not set. Use: webgpt-client.bat set-server <url> <username> or fill webgpt.env WEBCODEX_USERNAME"; return 1 }
-  if (-not $tok)    { Write-Host "[x] server admin token not set. Use: webgpt-client.bat set-server-token <WEBCODEX_TOKEN>"; Write-Host "       or fill WEBCODEX_TOKEN in: $((Get-WcEnvFilePath))"; return 1 }
+  if (-not $server) { Write-Host "[x] server_url not set. Use: kunkun-tools.bat set-server <url> [username] or fill kunkun-tools.env WEBCODEX_SERVER_URL"; return 1 }
+  if (-not $user)   { Write-Host "[x] username not set. Use: kunkun-tools.bat set-server <url> <username> or fill kunkun-tools.env WEBCODEX_USERNAME"; return 1 }
+  if (-not $tok)    { Write-Host "[x] server admin token not set. Use: kunkun-tools.bat set-server-token <WEBCODEX_TOKEN>"; Write-Host "       or fill WEBCODEX_TOKEN in: $((Get-WcEnvFilePath))"; return 1 }
 
   # already logged in? find agent.toml (CLI names the dir like the server
   # URL with non-alphanumerics -> '_', e.g. https://x -> https_x)
@@ -525,12 +538,12 @@ function Pair-WcClient {
   if ($code2 -ne 0) {
     Write-Host "[x] login failed (exit $code2):"
     Write-Host ($out2 + $err2)
-    Write-Host "(!) the one-time code was consumed; re-run: webgpt-client.bat pair"
+    Write-Host "(!) the one-time code was consumed; re-run: kunkun-tools.bat pair"
     return 1
   }
   if ($out2) { Write-Host $out2 }
   Write-Host ("[pair] done. agent.toml = " + $agentPath)
-  Write-Host "       Next: run 'webgpt-client.bat' (no args) to start the Runner."
+  Write-Host "       Next: run 'kunkun-tools.bat' (no args) to start the Runner."
   return 0
 }
 
@@ -573,7 +586,7 @@ function Add-WcMcp {
   $node = $env:WC_NODE
   $cli  = $env:WC_CLI
   if (-not $cli -or -not $node) {
-    Write-Host "[x] WC_NODE/WC_CLI not set. Run via: webgpt-client.bat add-mcp"
+    Write-Host "[x] WC_NODE/WC_CLI not set. Run via: kunkun-tools.bat add-mcp"
     return 1
   }
   $server = [string]$cfg['server_url']
@@ -581,15 +594,15 @@ function Add-WcMcp {
   $user = [string]$cfg['username']
   if (-not $user) { $user = [string]$envMap['WEBCODEX_USERNAME'] }
   # credential used by tokens create-local (register_hash needs admin-or-self):
-  #   1) set-bootstrap value  2) webgpt.env WEBCODEX_BOOTSTRAP  3) server admin token
+  #   1) set-bootstrap value  2) kunkun-tools.env WEBCODEX_BOOTSTRAP  3) server admin token
   $boot = [string]$cfg['bootstrap']
   if (-not $boot) { $boot = [string]$envMap['WEBCODEX_BOOTSTRAP'] }
   if (-not $boot) { $boot = [string]$cfg['server_token'] }
   if (-not $boot) { $boot = [string]$envMap['WEBCODEX_TOKEN'] }
   if (Test-WcPlaceholder $boot) { $boot = "" }
-  if (-not $server) { Write-Host "[x] server_url not set. Use: webgpt-client.bat set-server <server-url> [username] OR fill webgpt.env WEBCODEX_SERVER_URL"; return 1 }
-  if (-not $user)   { Write-Host "[x] username not set. Use: webgpt-client.bat set-server <server-url> <username> OR fill webgpt.env WEBCODEX_USERNAME"; return 1 }
-  if (-not $boot)   { Write-Host "[x] no account/admin credential for token mint. Use: webgpt-client.bat set-bootstrap <wc_pat> OR fill webgpt.env WEBCODEX_BOOTSTRAP / WEBCODEX_TOKEN"; return 1 }
+  if (-not $server) { Write-Host "[x] server_url not set. Use: kunkun-tools.bat set-server <server-url> [username] OR fill kunkun-tools.env WEBCODEX_SERVER_URL"; return 1 }
+  if (-not $user)   { Write-Host "[x] username not set. Use: kunkun-tools.bat set-server <server-url> <username> OR fill kunkun-tools.env WEBCODEX_USERNAME"; return 1 }
+  if (-not $boot)   { Write-Host "[x] no account/admin credential for token mint. Use: kunkun-tools.bat set-bootstrap <wc_pat> OR fill kunkun-tools.env WEBCODEX_BOOTSTRAP / WEBCODEX_TOKEN"; return 1 }
   $scopesCsv = Get-WcDefaultScopesCsv
   if ($cfg['scopes'] -and ($cfg['scopes'] -is [array])) { $scopesCsv = ($cfg['scopes'] -join ',') }
   Write-Host ("[mcp] script=" + $script:WcScriptStamp + " minting token: webcodex tokens create-local (server=" + $server + ", user=" + $user + ")")
@@ -597,7 +610,7 @@ function Add-WcMcp {
   try {
     $mcpInv = Get-WcCliInvocation -CliArgs @('tokens', 'create-local',
       '--server-url', $server, '--username', $user,
-      '--credential-env', 'WEBCODEX_ACCOUNT_CREDENTIAL', '--name', 'webgpt-mcp', '--scopes', $scopesCsv)
+      '--credential-env', 'WEBCODEX_ACCOUNT_CREDENTIAL', '--name', 'kunkun-mcp', '--scopes', $scopesCsv)
     if (-not $mcpInv) { Write-Host "[x] no webcodex CLI executable found (WC_CLI/WC_NODE)"; return 1 }
     $mcpArgs = [string[]]$mcpInv.args
     $mcpArgs += @(Get-WcCliProxyArgs)
@@ -624,8 +637,8 @@ function Add-WcMcp {
   Save-WcConfig $cfg
   Write-Host ("[mcp] token minted + cached (masked: " + (Mask-Secret $tok) + "), mode set to mcp")
   Apply-WcMcpConfig
-  Write-Host "[mcp] done. Running 'webgpt-client.bat' (no args) will export WEBCODEX_BEARER for Codex."
-  Write-Host "      (want the tunnel path instead? run: webgpt-client.bat mode tunnel)"
+  Write-Host "[mcp] done. Running 'kunkun-tools.bat' (no args) will export WEBCODEX_BEARER for Codex."
+  Write-Host "      (want the tunnel path instead? run: kunkun-tools.bat mode tunnel)"
   return 0
 }
 
@@ -636,7 +649,7 @@ function Show-WcConfig {
   $envMap = Read-WcEnvFile
   Write-Host ("[config] file: " + (Get-WcConfigPath))
   $envFile = Get-WcEnvFilePath
-  Write-Host ("[config] webgpt.env: " + $envFile + " (" + $(if (Test-Path $envFile) { "present" } else { "missing" }) + ")")
+  Write-Host ("[config] kunkun-tools.env: " + $envFile + " (" + $(if (Test-Path $envFile) { "present" } else { "missing" }) + ")")
   if ($cfg.Count -eq 0) { Write-Host "  (empty - nothing configured yet)"; return }
   Write-Host ("  server_url    = " + [string]$cfg['server_url'])
   Write-Host ("  username      = " + [string]$cfg['username'])
@@ -657,29 +670,29 @@ function Show-WcConfig {
     if ([string]$envMap[$k]) { $envKeys += $k }
   }
   if ([string]$envMap['WEBCODEX_TOKEN'] -and -not (Test-WcPlaceholder ([string]$envMap['WEBCODEX_TOKEN']))) { $envKeys += 'WEBCODEX_TOKEN' }
-  if ($envKeys.Count -gt 0) { Write-Host ("  webgpt.env keys = " + ($envKeys -join ', ')) }
+  if ($envKeys.Count -gt 0) { Write-Host ("  kunkun-tools.env keys = " + ($envKeys -join ', ')) }
 }
 
 function Show-WcConfigHelp {
-  Write-Host "WebGpt client config commands:"
-  Write-Host "  webgpt-client.bat menu                       # interactive menu (same as no args)"
-  Write-Host "  webgpt-client.bat inject                     # (re)inject the project prompt into Codex AGENTS.md"
-  Write-Host "  webgpt-client.bat reset [--yes]              # one-click restore (prompt/codex-mcp/config/[acp])"
-  Write-Host "  webgpt-client.bat show-config               # show cached config (secrets masked)"
-  Write-Host "  webgpt-client.bat set-server <url> [username]"
-  Write-Host "  webgpt-client.bat set-bootstrap <wc_pat>    # account credential used to mint tokens"
-  Write-Host "  webgpt-client.bat add-mcp                   # mint wc_pat_... + configure Codex MCP"
-  Write-Host "  webgpt-client.bat mode [mcp|tunnel]         # choose connection mode"
-  Write-Host "  webgpt-client.bat mcp | tunnel              # shorthand for mode"
-  Write-Host "  webgpt-client.bat set-apikey [key]          # cache model API key (prompts if omitted)"
-  Write-Host "  webgpt-client.bat edit-apikey [key]         # change cached API key"
-  Write-Host "  webgpt-client.bat show-apikey [--reveal]    # show cached API key (masked by default)"
-  Write-Host "  webgpt-client.bat get-bearer                # print cached wc_pat (full)"
-  Write-Host "  webgpt-client.bat set-tunnel <url> [bearer]"
-  Write-Host "  webgpt-client.bat set-server-token <t>      # cache server admin token (or fill webgpt.env)"
-  Write-Host "  webgpt-client.bat set-allowed-root <path>   # Runner allowed root (used by pair)"
-  Write-Host "  webgpt-client.bat pair [client-id]          # CLI-side pairing create + auto login"
-  Write-Host "  webgpt-client.bat                           # interactive menu (no args)"
+  Write-Host "kunkun-tools commands:"
+  Write-Host "  kunkun-tools.bat menu                       # interactive menu (same as no args)"
+  Write-Host "  kunkun-tools.bat inject                     # (re)inject the project prompt into Codex AGENTS.md"
+  Write-Host "  kunkun-tools.bat reset [--yes]              # one-click restore (prompt/codex-mcp/config/[acp])"
+  Write-Host "  kunkun-tools.bat show-config               # show cached config (secrets masked)"
+  Write-Host "  kunkun-tools.bat set-server <url> [username]"
+  Write-Host "  kunkun-tools.bat set-bootstrap <wc_pat>    # account credential used to mint tokens"
+  Write-Host "  kunkun-tools.bat add-mcp                   # mint wc_pat_... + configure Codex MCP"
+  Write-Host "  kunkun-tools.bat mode [mcp|tunnel]         # choose connection mode"
+  Write-Host "  kunkun-tools.bat mcp | tunnel              # shorthand for mode"
+  Write-Host "  kunkun-tools.bat set-apikey [key]          # cache model API key (prompts if omitted)"
+  Write-Host "  kunkun-tools.bat edit-apikey [key]         # change cached API key"
+  Write-Host "  kunkun-tools.bat show-apikey [--reveal]    # show cached API key (masked by default)"
+  Write-Host "  kunkun-tools.bat get-bearer                # print cached wc_pat (full)"
+  Write-Host "  kunkun-tools.bat set-tunnel <url> [bearer]"
+  Write-Host "  kunkun-tools.bat set-server-token <t>      # cache server admin token (or fill kunkun-tools.env)"
+  Write-Host "  kunkun-tools.bat set-allowed-root <path>   # Runner allowed root (used by pair)"
+  Write-Host "  kunkun-tools.bat pair [client-id]          # CLI-side pairing create + auto login"
+  Write-Host "  kunkun-tools.bat                           # interactive menu (no args)"
 }
 
 # Interactive menu (bt-panel style). Returns 'launch' to continue into the
@@ -688,7 +701,7 @@ function Show-WcMenu {
   while ($true) {
     Write-Host ""
     Write-Host "==================================================="
-    Write-Host " WebGpt Client -- Windows Runner + Codex"
+    Write-Host " kunkun-tools -- WebCodex Runner + Codex"
     Write-Host "==================================================="
     Write-Host " (1) Start Runner (launch)"
     Write-Host " (2) One-shot setup / login (pair)"
@@ -730,7 +743,7 @@ function Show-WcMenu {
 function Invoke-WcConfigCommand {
   param([string]$Command, [string[]]$Rest = @())
   switch ($Command) {
-    'menu'        { $r = Show-WcMenu; if ($r -eq 'launch') { Write-Host "To launch the Runner, run 'webgpt-client.bat' with no args." }; return 0 }
+    'menu'        { $r = Show-WcMenu; if ($r -eq 'launch') { Write-Host "To launch the Runner, run 'kunkun-tools.bat' with no args." }; return 0 }
     'inject'      { $null = Invoke-WcPromptInjection; return 0 }
     'reset'       { return (Reset-WcAll -Yes:($Rest -contains '--yes')) }
     'help'        { Show-WcConfigHelp; return 0 }

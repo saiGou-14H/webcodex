@@ -6,9 +6,9 @@
 
 ## 0. 快速开始（三分钟）
 
-前提：Linux 侧 Server/Tunnel/Runner 已就绪（见下文），Windows 上已放好 `webgpt-client.bat` + `webgpt-client.ps1` + `webgpt-config.ps1` + `codex-acp-proxy.js` + `webcodex-cli-win\bin\webcodex.js`（都在 `D:\WebGpt`）。
+前提：Linux 侧 Server/Tunnel/Runner 已就绪（见下文），Windows 上已放好 `kunkun-tools.bat` + `kunkun-tools.ps1` + `kunkun-config.ps1` + `codex-acp-proxy.js` + `webcodex-cli-win\bin\webcodex.js`（都在 `D:\WebGpt`）。
 
-**Windows 只需双击 `D:\WebGpt\webgpt-client.bat`**，它会自动：
+**Windows 只需双击 `D:\WebGpt\kunkun-tools.bat`**，它会自动：
 
 ```text
 [0] killing previous WebGpt/Codex processes...   ← 自动杀上次残留进程
@@ -22,7 +22,7 @@
 ```
 
 之后在 Chatgpt 里连 WebGpt，用 **路径 A（核心工具）** 直接开发项目即可（见「使用教程」）。
-连接管理（MCP 签发 / APIKey / 模式）用 `webgpt-client.bat <子命令>`，见 §3.4。
+连接管理（MCP 签发 / APIKey / 模式）用 `kunkun-tools.bat <子命令>`，见 §3.4。
 
 Linux 侧日常只用三条状态查询：
 
@@ -36,8 +36,8 @@ cat /root/.config/openai/tunnel-health.url | xargs -I{} curl -sS -o /dev/null -w
 
 下载站（`/webcodex-dl/`，Nginx 静态分发，绕开 GitHub）：
 
-- 客户端脚本包：`https://chatgpt.kunkun.chat/webcodex-dl/webgpt-client-win.tar.gz`
-  （`webgpt-client.bat`、`webgpt-client.ps1`、`webgpt-config.ps1`、`codex-acp-proxy.js`、`AGENTS.md`、`CODEX_SYSTEM_PROMPT.md`、`agent.toml.windows.example`、`README.md`）
+- 客户端脚本包：`https://chatgpt.kunkun.chat/webcodex-dl/kunkun-tools-win.tar.gz`
+  （`kunkun-tools.bat`、`kunkun-tools.ps1`、`kunkun-config.ps1`、`codex-acp-proxy.js`、`AGENTS.md`、`CODEX_SYSTEM_PROMPT.md`、`agent.toml.windows.example`、`README.md`）
 - 自包含 WebCodex CLI：`https://chatgpt.kunkun.chat/webcodex-dl/webcodex-cli-win.tar.gz`
   （免 npm；解出 `webcodex-cli-win\bin\webcodex.js` + `vendor\bin\*`）
 
@@ -45,7 +45,7 @@ cat /root/.config/openai/tunnel-health.url | xargs -I{} curl -sS -o /dev/null -w
 # 1) 建目录
 New-Item -ItemType Directory -Force D:\WebGpt
 # 2) 下载（含进度条）
-Invoke-WebRequest https://chatgpt.kunkun.chat/webcodex-dl/webgpt-client-win.tar.gz -OutFile D:\WebGpt\client.tar.gz
+Invoke-WebRequest https://chatgpt.kunkun.chat/webcodex-dl/kunkun-tools-win.tar.gz -OutFile D:\WebGpt\client.tar.gz
 Invoke-WebRequest https://chatgpt.kunkun.chat/webcodex-dl/webcodex-cli-win.tar.gz   -OutFile D:\WebGpt\cli.tar.gz
 # 3) 解压（Windows 10 1803+ 自带 tar.exe）
 cd D:\WebGpt
@@ -53,7 +53,7 @@ tar -xzf client.tar.gz          # 直接解到 D:\WebGpt 根
 tar -xzf cli.tar.gz             # 解出 D:\WebGpt\webcodex-cli-win\
 # 4) 校验
 D:\WebGpt\webcodex-cli-win\bin\webcodex.js --version   # 应 0.3.9
-dir D:\WebGpt\webgpt-client.bat D:\WebGpt\webgpt-config.ps1
+dir D:\WebGpt\kunkun-tools.bat D:\WebGpt\kunkun-config.ps1
 ```
 
 ### 仓库文件结构（server / client 分开）
@@ -62,8 +62,8 @@ dir D:\WebGpt\webgpt-client.bat D:\WebGpt\webgpt-config.ps1
 deploy/server/   服务器（Linux）侧部署文件：webcodex.service/.socket、webcodex-runner.service、
                  webcodex-tunnel.service、run-tunnel.sh、nginx.chatgpt.kunkun.chat.conf、
                  webcodex.env.example、agent.toml.linux.example
-deploy/client/   客户端（Windows Runner）侧脚本：webgpt-client.bat/.ps1、webgpt-config.ps1、
-                 webgpt.env.example、codex-acp-proxy.js、agent.toml.windows.example、
+deploy/client/   客户端（Windows Runner）侧脚本：kunkun-tools.bat/.ps1、kunkun-config.ps1、
+                 kunkun-tools.env.example、codex-acp-proxy.js、agent.toml.windows.example、
                  CODEX_SYSTEM_PROMPT.md、AGENTS.md
 ```
 > 📋 **部署清单 / 哪台机器放哪个文件夹**（中英双语）：[`deploy/README.md`](../deploy/README.md)（简体中文）/ [`deploy/README.en.md`](../deploy/README.en.md)（English）。
@@ -191,11 +191,11 @@ allowed_config_options = []
 > - `executable` 必须是 **node.exe 的绝对路径**（不能是 `node` 或 .js）。
 > - 代理 `.js` 放在 `args`。
 > - `env_from_env` 必须含 **`PATH`**（否则代理内 `spawn codex` 报 `ENOENT`），并含 **`CODEX_CMD`**（把 codex 真实路径透传给代理，代理才能用 node/真实 exe 启动 codex）。
-> - **推荐用 `webgpt-client.bat` 自动生成以上 `[acp]`**（它探测真实 node/codex 并回填），无需手写。
+> - **推荐用 `kunkun-tools.bat` 自动生成以上 `[acp]`**（它探测真实 node/codex 并回填），无需手写。
 
-### 3.2 一键启动器：`webgpt-client.bat`（推荐）
+### 3.2 一键启动器：`kunkun-tools.bat`（推荐）
 
-文件：`deploy/client/webgpt-client.bat` + `deploy/client/webgpt-client.ps1`（放 `D:\WebGpt`）。双击即自动完成：杀残留进程 → 探测 node/codex → 回填 `[acp]` → 设 env → **提示词注入（[7b]）** → **应用连接配置（[7c]）** → 前台启动 Runner。不会再出现手写路径/TOML 转义/二次配置的问题。
+文件：`deploy/client/kunkun-tools.bat` + `deploy/client/kunkun-tools.ps1`（放 `D:\WebGpt`）。双击即自动完成：杀残留进程 → 探测 node/codex → 回填 `[acp]` → 设 env → **提示词注入（[7b]）** → **应用连接配置（[7c]）** → 前台启动 Runner。不会再出现手写路径/TOML 转义/二次配置的问题。
 
 ### 3.3 Runner 进程环境变量（等价手工方式；推荐直接用 3.2 启动器）
 
@@ -206,9 +206,9 @@ $env:CODEX_HOME = "$env:USERPROFILE\.codex"
 # 若 codex 不在 PATH：$env:CODEX_CMD = "<codex 绝对路径>"
 ```
 
-### 3.4 连接配置管理（MCP / APIKey / 连接模式）—— `webgpt-config.ps1`
+### 3.4 连接配置管理（MCP / APIKey / 连接模式）—— `kunkun-config.ps1`
 
-`webgpt-client.bat` **无参数 = 启动 Runner；带子命令 = 配置管理入口**（由 `webgpt-config.ps1` 实现）。所有配置缓存到 **`%USERPROFILE%\.webgpt\client.json`**（可用 `WC_CONFIG` 换位置；写入后用 icacls 限制为当前用户，仅显示脱敏值）。
+`kunkun-tools.bat` **无参数 = 启动 Runner；带子命令 = 配置管理入口**（由 `kunkun-config.ps1` 实现）。所有配置缓存到 **`%USERPROFILE%\.kunkun-tools\client.json`**（可用 `WC_CONFIG` 换位置；写入后用 icacls 限制为当前用户，仅显示脱敏值）。
 
 | 子命令 | 作用 |
 |---|---|
@@ -229,12 +229,12 @@ $env:CODEX_HOME = "$env:USERPROFILE\.codex"
 **一次跑通的顺序**（PowerShell）：
 
 ```powershell
-D:\WebGpt\webgpt-client.bat set-server https://chatgpt.kunkun.chat saigou
-D:\WebGpt\webgpt-client.bat set-bootstrap <已有 wc_pat>   # 已有、可注册新 token 的账号凭据
-D:\WebGpt\webgpt-client.bat add-mcp                      # 自动签发新 wc_pat_xxx 并写入 Codex MCP
-D:\WebGpt\webgpt-client.bat set-apikey
-D:\WebGpt\webgpt-client.bat mode mcp                     # 或先 set-tunnel 再 mode tunnel
-D:\WebGpt\webgpt-client.bat show-config                  # 核对（密文脱敏）
+D:\WebGpt\kunkun-tools.bat set-server https://chatgpt.kunkun.chat saigou
+D:\WebGpt\kunkun-tools.bat set-bootstrap <已有 wc_pat>   # 已有、可注册新 token 的账号凭据
+D:\WebGpt\kunkun-tools.bat add-mcp                      # 自动签发新 wc_pat_xxx 并写入 Codex MCP
+D:\WebGpt\kunkun-tools.bat set-apikey
+D:\WebGpt\kunkun-tools.bat mode mcp                     # 或先 set-tunnel 再 mode tunnel
+D:\WebGpt\kunkun-tools.bat show-config                  # 核对（密文脱敏）
 ```
 
 **模式含义与启动行为**
@@ -245,17 +245,17 @@ D:\WebGpt\webgpt-client.bat show-config                  # 核对（密文脱敏
 
 **方案 B：完全客户端注册 Runner（服务器侧零操作）**
 
-管理员令牌放在**解压包里的配置 `D:\WebGpt\webgpt.env`**（随 `webgpt-client-win.tar.gz` 解出），`pair` 自动读取：
+管理员令牌放在**解压包里的配置 `D:\WebGpt\kunkun-tools.env`**（随 `kunkun-tools-win.tar.gz` 解出），`pair` 自动读取：
 
 ```powershell
-# 1) 编辑 D:\WebGpt\webgpt.env，把 WEBCODEX_TOKEN=<填这里> 换成服务器
+# 1) 编辑 D:\WebGpt\kunkun-tools.env，把 WEBCODEX_TOKEN=<填这里> 换成服务器
 #    /etc/webcodex/webcodex.env 里的真实 WEBCODEX_TOKEN
 #    （可顺便填 WEBCODEX_SERVER_URL / WEBCODEX_USERNAME / WEBCODEX_ALLOWED_ROOT）
-# 2) 一键注册：读取 webgpt.env → 签发 wc_pair_* → 自动 login → agent.toml
-D:\WebGpt\webgpt-client.bat pair
+# 2) 一键注册：读取 kunkun-tools.env → 签发 wc_pair_* → 自动 login → agent.toml
+D:\WebGpt\kunkun-tools.bat pair
 ```
 
-读取优先级：配置缓存（`set-server`/`set-server-token`/`set-allowed-root`）→ `webgpt.env` → `WC_SERVER_TOKEN` 环境变量；占位值（`<填这里>`/REDACTED 等）视为未设置。`pairing create` 是远程 HTTP 调用（`POST /api/pairing/create`），**随机 `wc_pair_*` 由服务器生成并登记**（`/api/pairing/enroll` 只认服务器登记的码，客户端无法凭空伪造一个可用的）；脚本拿到码后**立即登录消费**，全程无需手工复制。管理员令牌经 `WEBCODEX_TOKEN` 环境变量传给子进程（不落命令行）。公开下载包里的 `webgpt.env` 只含占位符——真实令牌不要放进公开下载站。
+读取优先级：配置缓存（`set-server`/`set-server-token`/`set-allowed-root`）→ `kunkun-tools.env` → `WC_SERVER_TOKEN` 环境变量；占位值（`<填这里>`/REDACTED 等）视为未设置。`pairing create` 是远程 HTTP 调用（`POST /api/pairing/create`），**随机 `wc_pair_*` 由服务器生成并登记**（`/api/pairing/enroll` 只认服务器登记的码，客户端无法凭空伪造一个可用的）；脚本拿到码后**立即登录消费**，全程无需手工复制。管理员令牌经 `WEBCODEX_TOKEN` 环境变量传给子进程（不落命令行）。公开下载包里的 `kunkun-tools.env` 只含占位符——真实令牌不要放进公开下载站。
 > 代价：服务器管理员令牌来到 Runner 机器（方案 B 的安全取舍）；专用单用途 Runner 可接受，否则用方案 A（服务器 `pairing create` 只出一次性码）。
 
 **要点 / 坑**
@@ -420,7 +420,7 @@ journalctl -u webcodex-runner.service --no-pager -n 40 | grep -iE "acp|coding.ag
 
 ### 9.2 Windows（执行侧使用）
 
-**一键启动（推荐）**：`D:\WebGpt\webgpt-client.bat` → 自动杀残留 + 回填 `[acp]` + 设 env + 提示词注入 + 应用连接配置 + 前台启动 Runner。窗口保持打开；停止用 `Ctrl-C`。连接配置（MCP / APIKey / 模式）用 `webgpt-client.bat <子命令>` 管理，见 §3.4。
+**一键启动（推荐）**：`D:\WebGpt\kunkun-tools.bat` → 自动杀残留 + 回填 `[acp]` + 设 env + 提示词注入 + 应用连接配置 + 前台启动 Runner。窗口保持打开；停止用 `Ctrl-C`。连接配置（MCP / APIKey / 模式）用 `kunkun-tools.bat <子命令>` 管理，见 §3.4。
 
 **注册项目**：在 Chatgpt 里让 @webgpt：
 ```text
