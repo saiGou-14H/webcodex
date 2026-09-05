@@ -127,20 +127,46 @@ function Test-WcPlaceholder([string]$v) {
   return ($v -match '[<>]' -or $v -match '(?i)redacted|change|your|example|placeholder')
 }
 
-# Run a native command capturing stdout+stderr without the PS 5.1 trap where
-# '$ErrorActionPreference=Stop' turns native stderr into a terminating
-# NativeCommandError when merged with 2>&1. stderr goes to a temp file.
+# Run a native command with a hard timeout. Uses Start-Process + WaitForExit
+# so a hung CLI (e.g. proxy/network blackhole) cannot block the launcher
+# forever, and captures stdout/stderr via files (no PS 5.1 stderr trap).
 function Invoke-NativeCapture {
-  param([string]$Exe, [string[]]$Args)
-  $errFile = Join-Path $env:TEMP ("wcerr_" + [guid]::NewGuid().ToString("N") + ".txt")
-  $stdout = (& $Exe @Args 2> $errFile | Out-String)
-  $code = $LASTEXITCODE
-  $stderr = ""
-  if (Test-Path $errFile) {
-    $stderr = [string](Get-Content $errFile -Raw -ErrorAction SilentlyContinue)
-    Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+  param([string]$Exe, [string[]]$Args, [int]$TimeoutMs = 120000)
+  $base = Join-Path $env:TEMP ("wcrun_" + [guid]::NewGuid().ToString("N"))
+  $outFile = $base + ".out"
+  $errFile = $base + ".err"
+  $p = $null
+  try {
+    $p = Start-Process -FilePath $Exe -ArgumentList $Args -NoNewWindow -PassThru `
+      -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    if (-not $p.WaitForExit($TimeoutMs)) {
+      try { $p.Kill() } catch { }
+      return @{ out = ""; err = "(timeout after ${TimeoutMs}ms: CLI did not exit. Check TCP/DNS to the server and proxy: run curl.exe -v https://chatgpt.kunkun.chat/ ; if a broken system proxy is set, re-run with WC_NO_PROXY=1)"; code = -1; timedOut = $true }
+    }
+    $stdout = ""
+    if (Test-Path $outFile) { $stdout = [string](Get-Content $outFile -Raw -ErrorAction SilentlyContinue); Remove-Item $outFile -Force -ErrorAction SilentlyContinue }
+    $stderr = ""
+    if (Test-Path $errFile) { $stderr = [string](Get-Content $errFile -Raw -ErrorAction SilentlyContinue); Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
+    return @{ out = $stdout; err = $stderr; code = $p.ExitCode; timedOut = $false }
+  } catch {
+    return @{ out = ""; err = [string]$_; code = -1; timedOut = $false }
+  } finally {
+    if ($p -and (-not $p.HasExited)) { try { $p.Kill() } catch { } }
   }
-  return @{ out = $stdout; err = $stderr; code = $code }
+}
+
+# Extra CLI proxy flags from env/config:
+#   WC_PROXY=http://host:port  -> --proxy <url>
+#   WC_NO_PROXY=1              -> --no-system-proxy (force direct)
+function Get-WcCliProxyArgs {
+  $cfg = Load-WcConfig
+  $proxy = $env:WC_PROXY
+  if (-not $proxy) { $proxy = [string]$cfg['proxy'] }
+  if ($proxy) { return @('--proxy', $proxy) }
+  $noProxy = $env:WC_NO_PROXY
+  if (-not $noProxy) { $noProxy = [string]$cfg['no_proxy'] }
+  if ($noProxy -and ($noProxy -eq '1' -or $noProxy -eq 'true' -or $noProxy -eq 'yes')) { return @('--no-system-proxy') }
+  return @()
 }
 
 # ---- mode ----
@@ -274,10 +300,18 @@ function Pair-WcClient {
   if (-not $user)   { Write-Host "[x] username not set. Use: webgpt-client.bat set-server <url> <username> or fill webgpt.env WEBCODEX_USERNAME"; return 1 }
   if (-not $tok)    { Write-Host "[x] server admin token not set. Use: webgpt-client.bat set-server-token <WEBCODEX_TOKEN>"; Write-Host "       or fill WEBCODEX_TOKEN in: $((Get-WcEnvFilePath))"; return 1 }
 
-  # already logged in? (agent.toml exists for this server/user)
+  # already logged in? find agent.toml (CLI names the dir like the server
+  # URL with non-alphanumerics -> '_', e.g. https://x -> https_x)
   $hostPath = $server -replace '^https?://', ''
-  $agentPath = Join-Path (Join-Path (Join-Path $env:APPDATA "webcodex") $hostPath) (Join-Path $user "agent.toml")
-  if (Test-Path $agentPath) {
+  $sanPath  = $server -replace '[^A-Za-z0-9.]', '_'
+  $agentBase = Join-Path $env:APPDATA "webcodex"
+  $candidates = @(
+    (Join-Path (Join-Path (Join-Path $agentBase $sanPath) $user) "agent.toml"),
+    (Join-Path (Join-Path (Join-Path $agentBase $hostPath) $user) "agent.toml")
+  )
+  $agentPath = $null
+  foreach ($c in $candidates) { if (Test-Path $c) { $agentPath = $c; break } }
+  if ($agentPath) {
     Write-Host ("[pair] already logged in to " + $server + " as " + $user + " (agent.toml: " + $agentPath + ")")
     Write-Host "       Nothing to do. To re-enroll: delete that agent.toml and re-run pair."
     return 0
@@ -286,7 +320,7 @@ function Pair-WcClient {
   # 1) client-side pairing create (token via env var, never on the command line)
   $env:WEBCODEX_TOKEN = $tok
   $pairCmd = @($node, $cli, 'pairing', 'create', '--server-url', $server, '--username', $user,
-    '--ttl-secs', '600', '--json')
+    '--ttl-secs', '600', '--json') + (Get-WcCliProxyArgs)
   if ($ClientId) { $pairCmd += @('--client-id', $ClientId) }
   Write-Host ("[pair] minting one-time code via server: " + $server)
   try {
@@ -312,7 +346,7 @@ function Pair-WcClient {
   Write-Host ("[pair] one-time code minted (masked: " + (Mask-Secret $pcode) + "), expires " + [string]$pc.expires_at)
 
   # 2) auto login (consumes the code exactly once, right here)
-  $loginCmd = @($node, $cli, 'login', $server, '--code', $pcode)
+  $loginCmd = @($node, $cli, 'login', $server, '--code', $pcode) + (Get-WcCliProxyArgs)
   if ($did) { $loginCmd += @('--device', $did) }
   if ($allowedRoot) { $loginCmd += @('--allowed-root', $allowedRoot) }
   Write-Host "[pair] logging in (code consumed on this machine)..."
@@ -396,9 +430,9 @@ function Add-WcMcp {
   Write-Host ("[mcp] minting token: webcodex tokens create-local (server=" + $server + ", user=" + $user + ")")
   $env:WEBCODEX_ACCOUNT_CREDENTIAL = $boot
   try {
-    $r = Invoke-NativeCapture -Exe $node -Args @($cli, 'tokens', 'create-local',
+    $r = Invoke-NativeCapture -Exe $node -Args (@($cli, 'tokens', 'create-local',
       '--server-url', $server, '--username', $user,
-      '--credential-env', 'WEBCODEX_ACCOUNT_CREDENTIAL', '--name', 'webgpt-mcp', '--scopes', $scopesCsv)
+      '--credential-env', 'WEBCODEX_ACCOUNT_CREDENTIAL', '--name', 'webgpt-mcp', '--scopes', $scopesCsv) + (Get-WcCliProxyArgs))
     $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_ACCOUNT_CREDENTIAL -ErrorAction SilentlyContinue
