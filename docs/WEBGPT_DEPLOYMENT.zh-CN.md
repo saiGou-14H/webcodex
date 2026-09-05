@@ -32,6 +32,30 @@ webcodex server status --env-file /etc/webcodex/webcodex.env
 cat /root/.config/openai/tunnel-health.url | xargs -I{} curl -sS -o /dev/null -w "readyz=%{http_code}\n" {}/readyz
 ```
 
+### 0.1 下载客户端（Windows 侧）
+
+下载站（`/webcodex-dl/`，Nginx 静态分发，绕开 GitHub）：
+
+- 客户端脚本包：`https://chatgpt.kunkun.chat/webcodex-dl/webgpt-client-win.tar.gz`
+  （`webgpt-client.bat`、`webgpt-client.ps1`、`webgpt-config.ps1`、`codex-acp-proxy.js`、`AGENTS.md`、`CODEX_SYSTEM_PROMPT.md`、`agent.toml.windows.example`、`README.md`）
+- 自包含 WebCodex CLI：`https://chatgpt.kunkun.chat/webcodex-dl/webcodex-cli-win.tar.gz`
+  （免 npm；解出 `webcodex-cli-win\bin\webcodex.js` + `vendor\bin\*`）
+
+```powershell
+# 1) 建目录
+New-Item -ItemType Directory -Force D:\WebGpt
+# 2) 下载（含进度条）
+Invoke-WebRequest https://chatgpt.kunkun.chat/webcodex-dl/webgpt-client-win.tar.gz -OutFile D:\WebGpt\client.tar.gz
+Invoke-WebRequest https://chatgpt.kunkun.chat/webcodex-dl/webcodex-cli-win.tar.gz   -OutFile D:\WebGpt\cli.tar.gz
+# 3) 解压（Windows 10 1803+ 自带 tar.exe）
+cd D:\WebGpt
+tar -xzf client.tar.gz          # 直接解到 D:\WebGpt 根
+tar -xzf cli.tar.gz             # 解出 D:\WebGpt\webcodex-cli-win\
+# 4) 校验
+D:\WebGpt\webcodex-cli-win\bin\webcodex.js --version   # 应 0.3.9
+dir D:\WebGpt\webgpt-client.bat D:\WebGpt\webgpt-config.ps1
+```
+
 ### 仓库文件结构（server / client 分开）
 
 ```
