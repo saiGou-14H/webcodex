@@ -20,7 +20,7 @@ Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱
 |---|---|
 | `set-server <url> [username]` | 设置 WebCodex 服务器地址（如 `https://chatgpt.kunkun.chat`）与用户名 |
 | `set-bootstrap <wc_pat>` | 设置**引导账号凭据**（一个已有可注册 token 的 wc_pat，用于签发新 token；仅存本地） |
-| `add-mcp` | **自动生成 `wc_pat_xxx`**：调 `webcodex tokens create-local` 向服务器注册并取回明文 token，缓存 `mcp.bearer`，并执行 `codex mcp add webcodex --url <server>/mcp --bearer-token-env-var WEBCODEX_BEARER` |
+| `add-mcp` | **自动生成 `wc_pat_xxx`**：调 `webcodex tokens create-local` 向服务器注册并取回明文 token，缓存 `mcp.bearer`，并执行 `codex mcp add kunkun-tools --url <server>/mcp --bearer-token-env-var WEBCODEX_BEARER` |
 | `mode mcp` / `mode tunnel`（或 `mcp` / `tunnel` 简写） | 切换连接模式，并同步 `codex mcp add` 的 URL（mcp=直连 `/mcp`；tunnel=走隧道端点） |
 | `set-apikey [key]` | 缓存模型 API Key（不传则交互输入） |
 | `edit-apikey [key]` | 修改本地缓存的 API Key（交互，可回车保留原值） |
@@ -38,7 +38,7 @@ Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱
 
 **模式含义：**
 
-- **mcp 模式**：本地 Codex 通过 `codex mcp add webcodex` 直连 `<server>/mcp`，启动时导出 `WEBCODEX_BEARER=<mcp.bearer>`（刚刚签发的 wc_pat）。
+- **mcp 模式**：本地 Codex 通过 `codex mcp add kunkun-tools` 直连 `<server>/mcp`，启动时导出 `WEBCODEX_BEARER=<mcp.bearer>`（刚刚签发的 wc_pat）。
 - **tunnel 模式**：走 OpenAI Secure MCP Tunnel（WebGpt）——启动时导出 `WEBCODEX_BEARER=<tunnel.bearer>`，MCP URL 指向 `tunnel.url`，不需要每用户 token。
 
 **方案 B：完全客户端一侧注册 Runner（无需在服务器上执行任何命令）**

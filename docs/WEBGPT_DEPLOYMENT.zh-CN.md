@@ -214,7 +214,7 @@ $env:CODEX_HOME = "$env:USERPROFILE\.codex"
 |---|---|
 | `set-server <url> [username]` | 设置 WebCodex 服务器地址（如 `https://chatgpt.kunkun.chat`）与用户名 |
 | `set-bootstrap <wc_pat>` | 设置**引导账号凭据**（一个已有、可注册新 token 的 `wc_pat`，仅本地保存用于签发） |
-| `add-mcp` | **自动签发 `wc_pat_xxx`**：`webcodex tokens create-local`（服务器登记 hash、明文只返回一次）→ 缓存 `mcp.bearer` → `codex mcp add webcodex --url <server>/mcp --bearer-token-env-var WEBCODEX_BEARER` |
+| `add-mcp` | **自动签发 `wc_pat_xxx`**：`webcodex tokens create-local`（服务器登记 hash、明文只返回一次）→ 缓存 `mcp.bearer` → `codex mcp add kunkun-tools --url <server>/mcp --bearer-token-env-var WEBCODEX_BEARER` |
 | `mode mcp` / `mode tunnel`（或 `mcp` / `tunnel` 简写） | 切换连接模式，并同步 `codex mcp add` 的 URL |
 | `set-apikey [key]` | 缓存模型 API Key（不传值则交互输入） |
 | `edit-apikey [key]` | 修改本地 API Key（交互，回车可保留原值） |

@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-13"
+$script:WcScriptStamp = "2026-09-05-14"
 
 $script:WcConfigCommands = @(
   'menu', 'inject', 'reset', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
@@ -292,7 +292,7 @@ function Reset-WcAll {
   if (-not $Yes) {
     Write-Host "[reset] This will:"
     Write-Host "  1) remove the injected prompt block from %USERPROFILE%\.codex\AGENTS.md"
-    Write-Host "  2) remove the 'webcodex' MCP server from Codex (codex mcp remove)"
+    Write-Host "  2) remove the 'kunkun-tools' MCP server from Codex (codex mcp remove)"
     Write-Host "  3) delete the local config cache %USERPROFILE%\.kunkun-tools\client.json (backup .bak)"
     Write-Host "  4) strip the [acp] section from agent.toml (backup .bak)"
     Write-Host "  5) restore Codex config.toml from the pre-change backup (backup .bak)"
@@ -314,12 +314,14 @@ function Reset-WcAll {
   # 2) codex mcp
   $codex = Get-WcCodexCmd
   if ($codex) {
-    $rc = Invoke-NativeCapture -Exe $codex -ArgList @('mcp', 'remove', 'webcodex')
-    Write-Host ("[reset] codex mcp remove webcodex (exit " + $rc.code + ")")
-    if ($rc.out) { Write-Host $rc.out }
-    if ($rc.err) { Write-Host $rc.err }
+    foreach ($mcpName in @('kunkun-tools', 'webcodex')) {
+      $rc = Invoke-NativeCapture -Exe $codex -ArgList @('mcp', 'remove', $mcpName)
+      if ($rc.out) { Write-Host $rc.out }
+      if ($rc.err) { Write-Host $rc.err }
+      Write-Host ("[reset] codex mcp remove " + $mcpName + " (exit " + $rc.code + ")")
+    }
     $done++
-  } else { Write-Host "[reset] codex not found - remove 'webcodex' from codex config manually" }
+  } else { Write-Host "[reset] codex not found - remove 'kunkun-tools' from codex config manually" }
   # 3) config cache
   $cfgPath = Get-WcConfigPath
   if (Test-Path $cfgPath) {
@@ -651,11 +653,14 @@ function Apply-WcMcpConfig {
   $codex = Get-WcCodexCmd
   if (-not $codex) {
     Write-Host "[!] codex not found; configure manually:"
-    Write-Host ("      codex mcp add webcodex --url " + $url + " --bearer-token-env-var WEBCODEX_BEARER")
+    Write-Host ("      codex mcp add kunkun-tools --url " + $url + " --bearer-token-env-var WEBCODEX_BEARER")
     return
   }
-  Write-Host ("[mcp] codex mcp add webcodex --url " + $url + " --bearer-token-env-var WEBCODEX_BEARER")
-  $rc = Invoke-NativeCapture -Exe $codex -ArgList @('mcp', 'add', 'webcodex', '--url', $url, '--bearer-token-env-var', 'WEBCODEX_BEARER')
+  # migrate: drop the legacy 'webcodex' MCP entry (best effort) before adding ours
+  $legacy = Invoke-NativeCapture -Exe $codex -ArgList @('mcp', 'remove', 'webcodex')
+  if ($legacy.out -and $legacy.out.Trim()) { Write-Host ("[mcp] removed legacy 'webcodex': " + $legacy.out.Trim()) }
+  Write-Host ("[mcp] codex mcp add kunkun-tools --url " + $url + " --bearer-token-env-var WEBCODEX_BEARER")
+  $rc = Invoke-NativeCapture -Exe $codex -ArgList @('mcp', 'add', 'kunkun-tools', '--url', $url, '--bearer-token-env-var', 'WEBCODEX_BEARER')
   if ($rc.out) { Write-Host $rc.out }
   if ($rc.err) { Write-Host $rc.err }
 }
@@ -714,7 +719,7 @@ function Add-WcMcp {
     Write-Host ($out + $r.err)
     return 1
   }
-  $cfg['mcp'] = @{ url = ($server.TrimEnd('/') + '/mcp'); bearer = $tok; bearer_env = 'WEBCODEX_BEARER' }
+  $cfg['mcp'] = @{ name = 'kunkun-tools'; url = ($server.TrimEnd('/') + '/mcp'); bearer = $tok; bearer_env = 'WEBCODEX_BEARER' }
   $cfg['mode'] = 'mcp'
   Save-WcConfig $cfg
   Write-Host ("[mcp] token minted + cached (masked: " + (Mask-Secret $tok) + "), mode set to mcp")

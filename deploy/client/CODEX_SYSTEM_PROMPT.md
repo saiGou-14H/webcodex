@@ -82,7 +82,7 @@ coding_agent_start · coding_agent_observe · coding_agent_cancel
 | **Codex 系统提示词 / `-c instructions=...`** | 作为系统指令注入 |
 | **会话首条指令** | 每个会话开头粘贴上面的 markdown |
 
-> 搭配：`codex mcp add webcodex --url https://chatgpt.kunkun.chat/mcp --bearer-token-env-var WEBCODEX_BEARER` + cwd 空目录 + `--sandbox read-only`。
+> 搭配：`codex mcp add kunkun-tools --url https://chatgpt.kunkun.chat/mcp --bearer-token-env-var WEBCODEX_BEARER` + cwd 空目录 + `--sandbox read-only`。
 >
 > ⚠️ 这段提示词是**项目级、可复用**的：不含任何硬编码路径。项目身份与 allowed_root 一律在运行时通过 `work_on_project`/`project_overview` 确定，换项目无需改动提示词。
 
