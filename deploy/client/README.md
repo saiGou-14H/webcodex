@@ -2,13 +2,41 @@
 
 Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱敏）：
 
-- `webgpt-client.bat` / `webgpt-client.ps1` — 一键启动器（杀残留 → 探测 → 回填 [acp] → 设 env → **提示词注入** → 启动 Runner）
+- `webgpt-client.bat` / `webgpt-client.ps1` — 一键启动器 + 配置管理入口（杀残留 → 探测 → 回填 [acp] → 设 env → **提示词注入** → **应用连接配置** → 启动 Runner）
+- `webgpt-config.ps1` — 配置管理库（MCP/APIKey/模式，本地缓存 `%USERPROFILE%\.webgpt\client.json`，icacls 保护）
 - `codex-acp-proxy.js` — ACP v1 代理（桥接 WebCodex Runner ↔ codex；用真实 codex.exe 绝对路径 + stdin+EOF + --sandbox）
 - `agent.toml.windows.example` — Windows Runner 配置（token 已脱敏，含 [acp]，allowed_roots=D:\work）
 - `CODEX_SYSTEM_PROMPT.md` — Codex 系统注入提示词（44 工具，**项目级、可复用，不含硬编码路径**）
 - `AGENTS.md` — 上面提示词的独立可落地版本，直接放到项目根目录即可（`work_on_project` 运行时确定项目与 allowed_root）
 
-放法：解到 `D:\WebGpt`，双击 `webgpt-client.bat`。
+放法：解到 `D:\WebGpt`，双击 `webgpt-client.bat`（无参数 = 启动 Runner）。
+
+## 配置管理（MCP / APIKey / 连接模式）
+
+`webgpt-client.bat <子命令>` 管理本机 Codex 的连接配置，全部缓存到 `%USERPROFILE%\.webgpt\client.json`（可用 `WC_CONFIG` 换位置；文件用 icacls 限制为当前用户）。
+
+| 子命令 | 作用 |
+|---|---|
+| `set-server <url> [username]` | 设置 WebCodex 服务器地址（如 `https://chatgpt.kunkun.chat`）与用户名 |
+| `set-bootstrap <wc_pat>` | 设置**引导账号凭据**（一个已有可注册 token 的 wc_pat，用于签发新 token；仅存本地） |
+| `add-mcp` | **自动生成 `wc_pat_xxx`**：调 `webcodex tokens create-local` 向服务器注册并取回明文 token，缓存 `mcp.bearer`，并执行 `codex mcp add webcodex --url <server>/mcp --bearer-token-env-var WEBCODEX_BEARER` |
+| `mode mcp` / `mode tunnel`（或 `mcp` / `tunnel` 简写） | 切换连接模式，并同步 `codex mcp add` 的 URL（mcp=直连 `/mcp`；tunnel=走隧道端点） |
+| `set-apikey [key]` | 缓存模型 API Key（不传则交互输入） |
+| `edit-apikey [key]` | 修改本地缓存的 API Key（交互，可回车保留原值） |
+| `show-apikey [--reveal]` | 查看缓存 API Key（默认脱敏；`--reveal` 显示明文） |
+| `get-bearer` | 打印缓存的 `wc_pat` 明文（用于复制到隧道/别处） |
+| `set-tunnel <url> [bearer]` | 配置 Tunnel 模式用的 MCP 端点与（可选）注入的 Bearer |
+| `show-config` | 查看全部缓存配置（密文脱敏） |
+| `help` | 列出所有子命令 |
+
+**默认签发 scope：** `runtime:read,session:collaborate,project:read,project:write,job:run,coding_agent:run`（MCP 直连 + 委托编码 Agent 都要用；可在 `client.json` 的 `scopes` 里改）。
+
+**模式含义：**
+
+- **mcp 模式**：本地 Codex 通过 `codex mcp add webcodex` 直连 `<server>/mcp`，启动时导出 `WEBCODEX_BEARER=<mcp.bearer>`（刚刚签发的 wc_pat）。
+- **tunnel 模式**：走 OpenAI Secure MCP Tunnel（WebGpt）——启动时导出 `WEBCODEX_BEARER=<tunnel.bearer>`，MCP URL 指向 `tunnel.url`，不需要每用户 token。
+
+**启动时自动应用：** 无参数运行 `webgpt-client.bat` 会读取缓存配置并导出 `WEBCODEX_BEARER`（按模式取 mcp/tunnel 的 bearer）、`OPENAI_API_KEY`、`OPENAI_BASE_URL`（若已配置）——Codex/ACP 代理子进程自动继承。
 
 ## 提示词注入（脚本自动完成）
 
@@ -16,7 +44,7 @@ Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱
 
 **提示词来源（按优先级）：**
 
-1. 手动指定：`webgpt-client.bat <AGENTS.md 路径>`，或先设 `set WC_INSTRUCTIONS_FILE=C:\...\AGENTS.md` 再运行。
+1. 手动指定：`webgpt-client.bat <AGENTS.md 路径>`（非配置子命令的参数会被当作提示词文件路径），或先设 `set WC_INSTRUCTIONS_FILE=C:\...\AGENTS.md` 再运行。
 2. `D:\WebGpt\AGENTS.md`（推荐，把 `deploy/client/AGENTS.md` 复制过去）。
 3. `D:\WebGpt\CODEX_SYSTEM_PROMPT.md`（自动只提取里面 ```markdown``` 代码块，忽略周边说明文字）。
 

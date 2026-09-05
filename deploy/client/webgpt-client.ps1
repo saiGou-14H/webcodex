@@ -1,5 +1,16 @@
 $ErrorActionPreference = "Stop"
 
+# ---- config manager (dot-source; dispatched before any process action) ----
+$cfgLib = Join-Path $PSScriptRoot "webgpt-config.ps1"
+if (Test-Path $cfgLib) { . $cfgLib }
+
+# ---- subcommand dispatch: config commands first, then legacy instructions-file arg ----
+if ($args.Count -gt 0 -and (Get-Command Is-WcConfigCommand -ErrorAction SilentlyContinue) -and (Is-WcConfigCommand $args[0])) {
+  $rest = @(); if ($args.Count -gt 1) { $rest = $args[1..($args.Count - 1)] }
+  exit (Invoke-WcConfigCommand -Command $args[0] -Rest $rest)
+}
+if ($args.Count -gt 0) { $env:WC_INSTRUCTIONS_FILE = $args[0] }
+
 # ---- [0] kill leftover WebGpt/Codex processes from a previous run ----
 Write-Host "[0] killing previous WebGpt/Codex processes..."
 try {
@@ -121,6 +132,29 @@ if ($injectSrc -and (Test-Path $injectSrc)) {
 } else {
   Write-Host "[7b] no instructions file found — skipping prompt injection"
   Write-Host "        (set WC_INSTRUCTIONS_FILE or drop AGENTS.md next to this script)"
+}
+
+# ---- [7c] apply cached connection config (mode / bearer / apikey) ----
+if (Get-Command Load-WcConfig -ErrorAction SilentlyContinue) {
+  $wcCfg = Load-WcConfig
+  if ($wcCfg -and $wcCfg.Count -gt 0) {
+    Write-Host ("[7c] connection mode = " + [string]$wcCfg['mode'])
+    if ([string]$wcCfg['apikey']) {
+      $env:OPENAI_API_KEY = [string]$wcCfg['apikey']
+      Write-Host ("      OPENAI_API_KEY  = " + (Mask-Secret ([string]$wcCfg['apikey'])))
+    }
+    if ([string]$wcCfg['api_base_url']) {
+      $env:OPENAI_BASE_URL = [string]$wcCfg['api_base_url']
+      Write-Host ("      OPENAI_BASE_URL = " + [string]$wcCfg['api_base_url'])
+    }
+    if ([string]$wcCfg['mode'] -eq 'tunnel' -and $wcCfg['tunnel'] -and [string]$wcCfg['tunnel'].bearer) {
+      $env:WEBCODEX_BEARER = [string]$wcCfg['tunnel'].bearer
+      Write-Host ("      WEBCODEX_BEARER = " + (Mask-Secret ([string]$wcCfg['tunnel'].bearer)) + " (tunnel)")
+    } elseif ($wcCfg['mcp'] -and [string]$wcCfg['mcp'].bearer) {
+      $env:WEBCODEX_BEARER = [string]$wcCfg['mcp'].bearer
+      Write-Host ("      WEBCODEX_BEARER = " + (Mask-Secret ([string]$wcCfg['mcp'].bearer)) + " (mcp)")
+    }
+  }
 }
 
 # ---- run runner ----

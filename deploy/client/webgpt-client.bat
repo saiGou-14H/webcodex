@@ -37,9 +37,8 @@ set "WC_CLI=%CLI%"
 set "WC_PROXY=%PROXY%"
 set "WC_AGENT=%AGENT%"
 
-REM --- prompt injection (optional): pass an AGENTS.md/instructions file as arg 1 ---
-if not "%~1"=="" set "WC_INSTRUCTIONS_FILE=%~1"
-if defined WC_INSTRUCTIONS_FILE echo [.] instructions file = %WC_INSTRUCTIONS_FILE%
+REM --- forward all args to the launcher: config subcommands (show-config/add-mcp/...) ---
+REM --- or an AGENTS.md/instructions file path (legacy). No args = launch runner. ---
 
 if not exist "%DIR%webgpt-client.ps1" (
   echo [x] webgpt-client.ps1 not found next to this bat.
@@ -48,5 +47,5 @@ if not exist "%DIR%webgpt-client.ps1" (
 )
 
 echo [.] DIR=%DIR%
-powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%webgpt-client.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%webgpt-client.ps1" %*
 endlocal

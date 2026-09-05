@@ -22,7 +22,7 @@ Linux 公网服务器 66.92.18.39        Windows（Runner + 项目 + Codex）
 | 机器 | 复制 `deploy/` 里的路径 | 对应文件 |
 |---|---|---|
 | **Linux 服务器** | `deploy/server/` | `webcodex.service`、`webcodex.socket`、`webcodex-runner.service`、`webcodex-tunnel.service`、`run-tunnel.sh`、`nginx.chatgpt.kunkun.chat.conf`、`webcodex.env.example`、`agent.toml.linux.example` |
-| **Windows Runner** | `deploy/client/` | `webgpt-client.bat`、`webgpt-client.ps1`、`codex-acp-proxy.js`、`agent.toml.windows.example` |
+| **Windows Runner** | `deploy/client/` | `webgpt-client.bat`、`webgpt-client.ps1`、`webgpt-config.ps1`、`codex-acp-proxy.js`、`agent.toml.windows.example`、`CODEX_SYSTEM_PROMPT.md`、`AGENTS.md` |
 
 > `server/` 与 `client/` 各自 README 有更细说明；`deploy/*.example`（上游通用模板）与本实例无关，仅作参考。
 
@@ -59,10 +59,11 @@ Linux 公网服务器 66.92.18.39        Windows（Runner + 项目 + Codex）
 ## 3. Windows Runner —— 部署清单
 
 - [ ] **① 自包含 webcodex-cli**：`D:\WebGpt\webcodex-cli-win\bin\webcodex.js`（本仓库无此文件，用免安装包；README 见 `docs/`）。`node ...webcodex.js --version` 应 0.3.9。
-- [ ] **② 放置客户端脚本**：`deploy/client/` 全部解到 `D:\WebGpt`（`webgpt-client.bat`、`webgpt-client.ps1`、`codex-acp-proxy.js`、`agent.toml.windows.example`）。
+- [ ] **② 放置客户端脚本**：`deploy/client/` 全部解到 `D:\WebGpt`（`webgpt-client.bat`、`webgpt-client.ps1`、`webgpt-config.ps1`、`codex-acp-proxy.js`、`agent.toml.windows.example`、`CODEX_SYSTEM_PROMPT.md`、`AGENTS.md`）。
 - [ ] **③ 登录（若未登录）**：`node webcodex-cli-win\bin\webcodex.js login https://chatgpt.kunkun.chat --code <wc_pair> --allowed-root D:\work`，拿到 `agent.toml`（在 `%APPDATA%\webcodex\https_chatgpt.kunkun.chat\saigou\agent.toml`）。
-- [ ] **④ 双击 `webgpt-client.bat`**（自动：杀残留 → 探测 node/codex → 回填 `[acp]` → 设 env → 启动 Runner）。
-- [ ] **⑤ 前置**：Codex CLI 已装且登录（`codex --version`；代理用真实 `codex.exe` 绝对路径或 `codex.js`）。
+- [ ] **④ （可选）配置连接**：`webgpt-client.bat set-server https://chatgpt.kunkun.chat saigou` → `set-bootstrap <wc_pat>` → `add-mcp`（自动签发 `wc_pat_xxx` 并写入 Codex MCP）→ `set-apikey`（缓存模型 API Key）→ `mode mcp|tunnel` 选连接模式。配置缓存于 `%USERPROFILE%\.webgpt\client.json`。
+- [ ] **⑤ 双击 `webgpt-client.bat`**（自动：杀残留 → 探测 node/codex → 回填 `[acp]` → 设 env → 提示词注入 → 应用连接配置 → 启动 Runner）。
+- [ ] **⑥ 前置**：Codex CLI 已装且登录（`codex --version`；代理用真实 `codex.exe` 绝对路径或 `codex.js`）。
 
 ## 4. 使用
 
