@@ -260,12 +260,14 @@ function Pair-WcClient {
 
   # 1) client-side pairing create (token via env var, never on the command line)
   $env:WEBCODEX_TOKEN = $tok
-  $pairArgs = @($node, $cli, 'pairing', 'create', '--server-url', $server, '--username', $user,
+  $pairCmd = @($node, $cli, 'pairing', 'create', '--server-url', $server, '--username', $user,
     '--ttl-secs', '600', '--json')
-  if ($ClientId) { $pairArgs += @('--client-id', $ClientId) }
+  if ($ClientId) { $pairCmd += @('--client-id', $ClientId) }
   Write-Host ("[pair] minting one-time code via server: " + $server)
   try {
-    $out = (& $pairArgs 2>&1 | Out-String)
+    $pairExe  = $pairCmd[0]
+    $pairRest = $pairCmd[1..($pairCmd.Count - 1)]
+    $out = (& $pairExe @pairRest 2>&1 | Out-String)
     $code = $LASTEXITCODE
   } finally {
     Remove-Item Env:\WEBCODEX_TOKEN -ErrorAction SilentlyContinue
@@ -291,7 +293,9 @@ function Pair-WcClient {
   if ($did) { $loginArgs += @('--device', $did) }
   if ($allowedRoot) { $loginArgs += @('--allowed-root', $allowedRoot) }
   Write-Host "[pair] logging in (code consumed on this machine)..."
-  $out2 = (& $loginArgs 2>&1 | Out-String)
+  $loginExe  = $loginArgs[0]
+  $loginRest = $loginArgs[1..($loginArgs.Count - 1)]
+  $out2 = (& $loginExe @loginRest 2>&1 | Out-String)
   $code2 = $LASTEXITCODE
   if ($code2 -ne 0) {
     Write-Host "[x] login failed (exit $code2):"
