@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-6"
+$script:WcScriptStamp = "2026-09-05-7"
 
 $script:WcConfigCommands = @(
   'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
@@ -135,10 +135,16 @@ function Test-WcPlaceholder([string]$v) {
 # PowerShell passes argv natively (no .NET ProcessStartInfo string parsing,
 # which delivered an empty command line on the user's Windows box), and
 # stderr goes to a file so the PS 5.1 EAP=Stop stderr trap cannot fire.
+# Run native CLI via PowerShell's call operator with file redirection.
+# PowerShell passes argv natively (no .NET ProcessStartInfo string parsing,
+# which delivered an empty command line on the user's Windows box), and
+# stderr goes to a file so the PS 5.1 EAP=Stop stderr trap cannot fire.
+# NOTE: param is named ArgList - a param named $Args collides with the
+# automatic $args variable (case-insensitive) and swallows the binding.
 function Invoke-NativeCapture {
-  param([string]$Exe, [string[]]$Args = @(), [int]$TimeoutMs = 120000)
+  param([string]$Exe, [string[]]$ArgList = @(), [int]$TimeoutMs = 120000)
   if (-not $Exe) { return @{ out = ""; err = "(internal: empty exe)"; code = -1; timedOut = $false } }
-  if ($env:WC_DEBUG -eq '1') { Write-Host ("[debug-capture] exe=" + $Exe + " argc=" + $Args.Count) }
+  if ($env:WC_DEBUG -eq '1') { Write-Host ("[debug-capture] exe=" + $Exe + " argc=" + $ArgList.Count) }
   $base = Join-Path $env:TEMP ("wcrun_" + [guid]::NewGuid().ToString("N"))
   $outFile = $base + ".out"
   $errFile = $base + ".err"
@@ -146,7 +152,7 @@ function Invoke-NativeCapture {
   $code = -1
   try {
     $ErrorActionPreference = "Continue"
-    & $Exe @Args 1> $outFile 2> $errFile
+    & $Exe @ArgList 1> $outFile 2> $errFile
     $code = $LASTEXITCODE
   } catch {
     $code = -1
@@ -161,11 +167,11 @@ function Invoke-NativeCapture {
 }
 
 function Invoke-WcWithRetry {
-  param([string]$Exe, [string[]]$Args = @(), [int]$TimeoutMs = 120000, [int]$Retries = 3)
+  param([string]$Exe, [string[]]$ArgList = @(), [int]$TimeoutMs = 120000, [int]$Retries = 3)
   $attempt = 0
   while ($true) {
     $attempt++
-    $r = Invoke-NativeCapture -Exe $Exe -Args $Args -TimeoutMs $TimeoutMs
+    $r = Invoke-NativeCapture -Exe $Exe -ArgList $ArgList -TimeoutMs $TimeoutMs
     if ($r.timedOut -and $attempt -lt $Retries) {
       Write-Host ("[retry] attempt " + $attempt + "/" + $Retries + " timed out - reconnecting (the CLI has no HTTP timeout; retries usually win)...")
       Start-Sleep -Seconds 3
@@ -372,7 +378,7 @@ function Pair-WcClient {
   if ($env:WC_DEBUG -eq '1') { Write-Host ("[debug] exe=" + $pairInv.exe + " args=" + ($pairArgs -join ' ')) }
   Write-Host ("[pair] minting one-time code via server: " + $server)
   try {
-    $r = Invoke-WcWithRetry -Exe $pairInv.exe -Args $pairArgs
+    $r = Invoke-WcWithRetry -Exe $pairInv.exe -ArgList $pairArgs
     $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_TOKEN -ErrorAction SilentlyContinue
@@ -400,7 +406,7 @@ function Pair-WcClient {
   if ($did) { $loginArgs += @('--device', $did) }
   if ($allowedRoot) { $loginArgs += @('--allowed-root', $allowedRoot) }
   Write-Host "[pair] logging in (code consumed on this machine)..."
-  $r2 = Invoke-WcWithRetry -Exe $loginInv.exe -Args $loginArgs
+  $r2 = Invoke-WcWithRetry -Exe $loginInv.exe -ArgList $loginArgs
   $out2 = $r2.out; $err2 = $r2.err; $code2 = $r2.code
   if (($out2 + $err2) -match 'Already logged in') {
     Write-Host "[pair] already logged in to $server as $user — nothing to change."
@@ -445,7 +451,7 @@ function Apply-WcMcpConfig {
     return
   }
   Write-Host ("[mcp] codex mcp add webcodex --url " + $url + " --bearer-token-env-var WEBCODEX_BEARER")
-  $rc = Invoke-NativeCapture -Exe $codex -Args @('mcp', 'add', 'webcodex', '--url', $url, '--bearer-token-env-var', 'WEBCODEX_BEARER')
+  $rc = Invoke-NativeCapture -Exe $codex -ArgList @('mcp', 'add', 'webcodex', '--url', $url, '--bearer-token-env-var', 'WEBCODEX_BEARER')
   if ($rc.out) { Write-Host $rc.out }
   if ($rc.err) { Write-Host $rc.err }
 }
@@ -486,8 +492,9 @@ function Add-WcMcp {
     if (-not $mcpInv) { Write-Host "[x] no webcodex CLI executable found (WC_CLI/WC_NODE)"; return 1 }
     $mcpArgs = [string[]]$mcpInv.args
     $mcpArgs += @(Get-WcCliProxyArgs)
+    Write-Host ("[diag] exe=" + $mcpInv.exe + " argc=" + $mcpArgs.Count + " argv=" + ($mcpArgs -join ' | '))
     if ($env:WC_DEBUG -eq '1') { Write-Host ("[debug] exe=" + $mcpInv.exe + " args=" + ($mcpArgs -join ' ')) }
-    $r = Invoke-WcWithRetry -Exe $mcpInv.exe -Args $mcpArgs
+    $r = Invoke-WcWithRetry -Exe $mcpInv.exe -ArgList $mcpArgs
     $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_ACCOUNT_CREDENTIAL -ErrorAction SilentlyContinue
