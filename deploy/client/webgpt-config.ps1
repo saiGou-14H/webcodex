@@ -11,10 +11,10 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-10"
+$script:WcScriptStamp = "2026-09-05-11"
 
 $script:WcConfigCommands = @(
-  'menu', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
+  'menu', 'inject', 'reset', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
   'set-apikey', 'show-apikey', 'edit-apikey', 'get-bearer',
   'set-server', 'set-bootstrap', 'set-tunnel',
   'set-server-token', 'set-allowed-root', 'pair', 'help'
@@ -219,6 +219,113 @@ function Get-WcCliInvocation {
     return @{ exe = $node; args = $wrapperArgs }
   }
   return $null
+}
+
+# ---- prompt injection (shared by the launcher [7b], 'inject' and the menu) ----
+
+$script:WcInjectStart = "<!-- webcodex-agents:start -->"
+$script:WcInjectEnd   = "<!-- webcodex-agents:end -->"
+
+function Get-WcScriptDir {
+  try { $d = Split-Path -Parent $MyInvocation.MyCommand.Path; if ($d -and (Test-Path $d)) { return $d } } catch { }
+  if ($PSScriptRoot) { return $PSScriptRoot }
+  return (Get-Location).Path
+}
+
+function Get-InjectContent([string]$path) {
+  $raw = Get-Content $path -Raw -Encoding UTF8
+  $m = [regex]::Match($raw, '(?s)```markdown\s*\r?\n(.*?)\r?\n```')
+  if ($m.Success) { return $m.Groups[1].Value.TrimEnd() }
+  return $raw.TrimEnd()
+}
+
+function Invoke-WcPromptInjection {
+  $injectSrc = $env:WC_INSTRUCTIONS_FILE
+  if (-not $injectSrc) {
+    $dir = Get-WcScriptDir
+    foreach ($cand in @((Join-Path $dir "AGENTS.md"), (Join-Path $dir "CODEX_SYSTEM_PROMPT.md"))) {
+      if ($cand -and (Test-Path $cand)) { $injectSrc = $cand; break }
+    }
+  }
+  if ($injectSrc -and (Test-Path $injectSrc)) {
+    $codexHome = $env:CODEX_HOME
+    if (-not $codexHome) { $codexHome = Join-Path $env:USERPROFILE ".codex" }
+    if (-not (Test-Path $codexHome)) { New-Item -ItemType Directory -Path $codexHome -Force | Out-Null }
+    $dest = Join-Path $codexHome "AGENTS.md"
+    $content = Get-InjectContent $injectSrc
+    $lineCount = ($content -split "`n").Count
+    $block = $script:WcInjectStart + "`r`n" + $content + "`r`n" + $script:WcInjectEnd
+    $pattern = '(?s)' + [regex]::Escape($script:WcInjectStart) + '.*?' + [regex]::Escape($script:WcInjectEnd)
+    $existing = ""
+    if (Test-Path $dest) {
+      $existing = [System.IO.File]::ReadAllText($dest)
+      $existing = ($existing -replace $pattern, '').TrimEnd()
+    }
+    if ($existing) { $new = $existing + "`r`n`r`n" + $block + "`r`n" }
+    else           { $new = $block + "`r`n" }
+    [System.IO.File]::WriteAllText($dest, $new, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host ("[inject] Codex instructions -> " + $dest)
+    Write-Host ("         (from " + $injectSrc + ", " + $lineCount + " lines, idempotent + non-destructive)")
+    return 0
+  }
+  Write-Host "[inject] no instructions file found - skipping (set WC_INSTRUCTIONS_FILE or drop AGENTS.md next to the scripts)"
+  return 1
+}
+
+# ---- reset: one-click restore to defaults ----
+
+function Reset-WcAll {
+  param([switch]$Yes)
+  if (-not $Yes) {
+    Write-Host "[reset] This will:"
+    Write-Host "  1) remove the injected prompt block from %USERPROFILE%\.codex\AGENTS.md"
+    Write-Host "  2) remove the 'webcodex' MCP server from Codex (codex mcp remove)"
+    Write-Host "  3) delete the local config cache %USERPROFILE%\.webgpt\client.json (backup .bak)"
+    Write-Host "  4) strip the [acp] section from agent.toml (backup .bak)"
+    $c = Read-Host "Proceed? (y/N)"
+    if ($c -notmatch '^y') { Write-Host "[reset] aborted."; return 1 }
+  }
+  $done = 0
+  # 1) injected prompt
+  $dest = Join-Path (Join-Path $env:USERPROFILE ".codex") "AGENTS.md"
+  if (Test-Path $dest) {
+    $existing = [System.IO.File]::ReadAllText($dest)
+    $pattern = '(?s)' + [regex]::Escape($script:WcInjectStart) + '.*?' + [regex]::Escape($script:WcInjectEnd)
+    $new = ($existing -replace $pattern, '').TrimEnd()
+    if ($new) { [System.IO.File]::WriteAllText($dest, $new, (New-Object System.Text.UTF8Encoding($false))) }
+    else { Remove-Item $dest -Force -ErrorAction SilentlyContinue }
+    Write-Host ("[reset] prompt injection removed -> " + $dest)
+    $done++
+  } else { Write-Host "[reset] no AGENTS.md found - skip" }
+  # 2) codex mcp
+  $codex = Get-WcCodexCmd
+  if ($codex) {
+    $rc = Invoke-NativeCapture -Exe $codex -ArgList @('mcp', 'remove', 'webcodex')
+    Write-Host ("[reset] codex mcp remove webcodex (exit " + $rc.code + ")")
+    if ($rc.out) { Write-Host $rc.out }
+    if ($rc.err) { Write-Host $rc.err }
+    $done++
+  } else { Write-Host "[reset] codex not found - remove 'webcodex' from codex config manually" }
+  # 3) config cache
+  $cfgPath = Get-WcConfigPath
+  if (Test-Path $cfgPath) {
+    Copy-Item $cfgPath ($cfgPath + ".bak") -Force -ErrorAction SilentlyContinue
+    Remove-Item $cfgPath -Force -ErrorAction SilentlyContinue
+    Write-Host ("[reset] config removed (backup: " + $cfgPath + ".bak)")
+    $done++
+  } else { Write-Host "[reset] no config cache - skip" }
+  # 4) agent.toml [acp]
+  $agent = $env:WC_AGENT
+  if ($agent -and (Test-Path $agent)) {
+    Copy-Item $agent ($agent + ".bak") -Force -ErrorAction SilentlyContinue
+    $raw = Get-Content $agent -Raw -Encoding UTF8
+    $stripped = [regex]::Replace($raw, '(?s)\r?\n\[acp\].*$', '').TrimEnd()
+    [System.IO.File]::WriteAllText($agent, ($stripped + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host ("[reset] [acp] stripped from agent.toml (backup: " + $agent + ".bak)")
+    $done++
+  } else { Write-Host "[reset] agent.toml not found - skip" }
+  Write-Host ("[reset] done (" + $done + " items). To set up fresh: run 'pair' then 'add-mcp'.")
+  return 0
 }
 
 # ---- mode ----
@@ -556,6 +663,8 @@ function Show-WcConfig {
 function Show-WcConfigHelp {
   Write-Host "WebGpt client config commands:"
   Write-Host "  webgpt-client.bat menu                       # interactive menu (same as no args)"
+  Write-Host "  webgpt-client.bat inject                     # (re)inject the project prompt into Codex AGENTS.md"
+  Write-Host "  webgpt-client.bat reset [--yes]              # one-click restore (prompt/codex-mcp/config/[acp])"
   Write-Host "  webgpt-client.bat show-config               # show cached config (secrets masked)"
   Write-Host "  webgpt-client.bat set-server <url> [username]"
   Write-Host "  webgpt-client.bat set-bootstrap <wc_pat>    # account credential used to mint tokens"
@@ -590,6 +699,8 @@ function Show-WcMenu {
     Write-Host " (7) Show MCP bearer (get-bearer)"
     Write-Host " (8) Show API key (show-apikey)"
     Write-Host " (9) Command help"
+    Write-Host " (10) Inject prompt (AGENTS.md)"
+    Write-Host " (11) Reset all (restore defaults)"
     Write-Host " (0) Exit"
     Write-Host "==================================================="
     $ans = Read-Host "Please enter a number"
@@ -607,6 +718,8 @@ function Show-WcMenu {
       7 { $null = Invoke-WcConfigCommand -Command 'get-bearer' }
       8 { $null = Invoke-WcConfigCommand -Command 'show-apikey' }
       9 { $null = Invoke-WcConfigCommand -Command 'help' }
+      10 { $null = Invoke-WcConfigCommand -Command 'inject' }
+      11 { $null = Invoke-WcConfigCommand -Command 'reset' }
       0 { Write-Host "Bye."; return "exit" }
       default { Write-Host "[x] invalid choice: $ans" }
     }
@@ -618,6 +731,8 @@ function Invoke-WcConfigCommand {
   param([string]$Command, [string[]]$Rest = @())
   switch ($Command) {
     'menu'        { $r = Show-WcMenu; if ($r -eq 'launch') { Write-Host "To launch the Runner, run 'webgpt-client.bat' with no args." }; return 0 }
+    'inject'      { $null = Invoke-WcPromptInjection; return 0 }
+    'reset'       { return (Reset-WcAll -Yes:($Rest -contains '--yes')) }
     'help'        { Show-WcConfigHelp; return 0 }
     'show-config' { Show-WcConfig; return 0 }
     'add-mcp'     { return (Add-WcMcp) }

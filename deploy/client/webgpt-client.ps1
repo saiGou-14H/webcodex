@@ -95,51 +95,11 @@ Write-Host "[7] HOME=$env:HOME"
 Write-Host "    CODEX_HOME=$env:CODEX_HOME"
 Write-Host "    CODEX_CMD=$env:CODEX_CMD"
 
-# ---- [7b] prompt injection: inject project-level instructions into Codex via AGENTS.md ----
-# Codex auto-loads $CODEX_HOME\AGENTS.md (global instructions) on every session, so we
-# stage our WebCodex MCP prompt there. Source order: $env:WC_INSTRUCTIONS_FILE, then
-# AGENTS.md, then CODEX_SYSTEM_PROMPT.md next to this script. If the source is
-# CODEX_SYSTEM_PROMPT.md (a doc with surrounding prose), extract the ```markdown block.
-function Get-InjectContent([string]$path) {
-  $raw = Get-Content $path -Raw -Encoding UTF8
-  $m = [regex]::Match($raw, '(?s)```markdown\s*\r?\n(.*?)\r?\n```')
-  if ($m.Success) { return $m.Groups[1].Value.TrimEnd() }
-  return $raw.TrimEnd()
-}
-$injectSrc = $env:WC_INSTRUCTIONS_FILE
-if (-not $injectSrc) {
-  foreach ($cand in @((Join-Path $PSScriptRoot "AGENTS.md"), (Join-Path $PSScriptRoot "CODEX_SYSTEM_PROMPT.md"))) {
-    if ($cand -and (Test-Path $cand)) { $injectSrc = $cand; break }
-  }
-}
-if ($injectSrc -and (Test-Path $injectSrc)) {
-  if (-not (Test-Path $env:CODEX_HOME)) { New-Item -ItemType Directory -Path $env:CODEX_HOME -Force | Out-Null }
-  $dest = Join-Path $env:CODEX_HOME "AGENTS.md"
-  $content = Get-InjectContent $injectSrc
-  $lineCount = ($content -split "`n").Count
-
-  # Marker-delimited block so injection is idempotent and non-destructive:
-  #   - we never inject ourselves twice (a previous injected block is replaced)
-  #   - any pre-existing global instructions the user still has in AGENTS.md are preserved
-  $startMark = "<!-- webcodex-agents:start -->"
-  $endMark   = "<!-- webcodex-agents:end -->"
-  $block     = $startMark + "`r`n" + $content + "`r`n" + $endMark
-  $pattern   = '(?s)' + [regex]::Escape($startMark) + '.*?' + [regex]::Escape($endMark)
-
-  $existing = ""
-  if (Test-Path $dest) {
-    $existing = [System.IO.File]::ReadAllText($dest)
-    $existing = ($existing -replace $pattern, '').TrimEnd()
-  }
-  if ($existing) { $new = $existing + "`r`n`r`n" + $block + "`r`n" }
-  else           { $new = $block + "`r`n" }
-  [System.IO.File]::WriteAllText($dest, $new, (New-Object System.Text.UTF8Encoding($false)))
-
-  Write-Host "[7b] injected Codex instructions   -> $dest"
-  Write-Host "        (from $injectSrc, $lineCount lines, idempotent + non-destructive)"
+# ---- [7b] prompt injection (shared function from webgpt-config.ps1) ----
+if (Get-Command Invoke-WcPromptInjection -ErrorAction SilentlyContinue) {
+  Invoke-WcPromptInjection
 } else {
-  Write-Host "[7b] no instructions file found — skipping prompt injection"
-  Write-Host "        (set WC_INSTRUCTIONS_FILE or drop AGENTS.md next to this script)"
+  Write-Host "[7b] prompt injection skipped (config library not loaded)"
 }
 
 # ---- [7c] apply cached connection config (mode / bearer / apikey) ----
