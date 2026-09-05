@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-4"
+$script:WcScriptStamp = "2026-09-05-5"
 
 $script:WcConfigCommands = @(
   'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
@@ -199,6 +199,30 @@ function Get-WcCliProxyArgs {
   return @()
 }
 
+# Prefer the native webcodex binary (vendor\bin\webcodex.exe) directly,
+# bypassing the node wrapper (webcodex.js) which has shown hangs under
+# redirected stdio on Windows. Override: $env:WC_NATIVE=<exe path>;
+# $env:WC_USE_WRAPPER=1 forces the node wrapper instead.
+function Get-WcCliInvocation {
+  param([string[]]$CliArgs)
+  if ($env:WC_USE_WRAPPER -ne '1') {
+    if ($env:WC_NATIVE -and (Test-Path $env:WC_NATIVE)) { return @{ exe = $env:WC_NATIVE; args = $CliArgs } }
+    $cli = $env:WC_CLI
+    if ($cli -and (Test-Path $cli)) {
+      $bin = Split-Path -Parent $cli
+      $pkg = Split-Path -Parent $bin
+      $cand = Join-Path (Join-Path $pkg "vendor\bin") "webcodex.exe"
+      if (Test-Path $cand) { return @{ exe = $cand; args = $CliArgs } }
+    }
+  }
+  $node = $env:WC_NODE
+  if ($node -and $env:WC_CLI) {
+    $wrapperArgs = @($env:WC_CLI) + $CliArgs
+    return @{ exe = $node; args = $wrapperArgs }
+  }
+  return $null
+}
+
 # ---- mode ----
 
 function Set-WcMode([string]$mode) {
@@ -349,13 +373,16 @@ function Pair-WcClient {
 
   # 1) client-side pairing create (token via env var, never on the command line)
   $env:WEBCODEX_TOKEN = $tok
-  $pairCmd = @($node, $cli, 'pairing', 'create', '--server-url', $server, '--username', $user,
-    '--ttl-secs', '600', '--json')
-  $pairCmd += @(Get-WcCliProxyArgs)
-  if ($ClientId) { $pairCmd += @('--client-id', $ClientId) }
+  $pairInv = Get-WcCliInvocation -CliArgs @('pairing', 'create', '--server-url', $server,
+    '--username', $user, '--ttl-secs', '600', '--json')
+  if (-not $pairInv) { Write-Host "[x] no webcodex CLI executable found (WC_CLI/WC_NODE)"; return 1 }
+  $pairArgs = [string[]]$pairInv.args
+  $pairArgs += @(Get-WcCliProxyArgs)
+  if ($ClientId) { $pairArgs += @('--client-id', $ClientId) }
+  if ($env:WC_DEBUG -eq '1') { Write-Host ("[debug] exe=" + $pairInv.exe + " args=" + ($pairArgs -join ' ')) }
   Write-Host ("[pair] minting one-time code via server: " + $server)
   try {
-    $r = Invoke-WcWithRetry -Exe $pairCmd[0] -Args $pairCmd[1..($pairCmd.Count - 1)]
+    $r = Invoke-WcWithRetry -Exe $pairInv.exe -Args $pairArgs
     $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_TOKEN -ErrorAction SilentlyContinue
@@ -377,12 +404,13 @@ function Pair-WcClient {
   Write-Host ("[pair] one-time code minted (masked: " + (Mask-Secret $pcode) + "), expires " + [string]$pc.expires_at)
 
   # 2) auto login (consumes the code exactly once, right here)
-  $loginCmd = @($node, $cli, 'login', $server, '--code', $pcode)
-  $loginCmd += @(Get-WcCliProxyArgs)
-  if ($did) { $loginCmd += @('--device', $did) }
-  if ($allowedRoot) { $loginCmd += @('--allowed-root', $allowedRoot) }
+  $loginInv = Get-WcCliInvocation -CliArgs @('login', $server, '--code', $pcode)
+  $loginArgs = [string[]]$loginInv.args
+  $loginArgs += @(Get-WcCliProxyArgs)
+  if ($did) { $loginArgs += @('--device', $did) }
+  if ($allowedRoot) { $loginArgs += @('--allowed-root', $allowedRoot) }
   Write-Host "[pair] logging in (code consumed on this machine)..."
-  $r2 = Invoke-WcWithRetry -Exe $loginCmd[0] -Args $loginCmd[1..($loginCmd.Count - 1)]
+  $r2 = Invoke-WcWithRetry -Exe $loginInv.exe -Args $loginArgs
   $out2 = $r2.out; $err2 = $r2.err; $code2 = $r2.code
   if (($out2 + $err2) -match 'Already logged in') {
     Write-Host "[pair] already logged in to $server as $user — nothing to change."
@@ -462,11 +490,14 @@ function Add-WcMcp {
   Write-Host ("[mcp] script=" + $script:WcScriptStamp + " minting token: webcodex tokens create-local (server=" + $server + ", user=" + $user + ")")
   $env:WEBCODEX_ACCOUNT_CREDENTIAL = $boot
   try {
-    $mcpArgs = @($cli, 'tokens', 'create-local',
+    $mcpInv = Get-WcCliInvocation -CliArgs @('tokens', 'create-local',
       '--server-url', $server, '--username', $user,
       '--credential-env', 'WEBCODEX_ACCOUNT_CREDENTIAL', '--name', 'webgpt-mcp', '--scopes', $scopesCsv)
+    if (-not $mcpInv) { Write-Host "[x] no webcodex CLI executable found (WC_CLI/WC_NODE)"; return 1 }
+    $mcpArgs = [string[]]$mcpInv.args
     $mcpArgs += @(Get-WcCliProxyArgs)
-    $r = Invoke-WcWithRetry -Exe $node -Args $mcpArgs
+    if ($env:WC_DEBUG -eq '1') { Write-Host ("[debug] exe=" + $mcpInv.exe + " args=" + ($mcpArgs -join ' ')) }
+    $r = Invoke-WcWithRetry -Exe $mcpInv.exe -Args $mcpArgs
     $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_ACCOUNT_CREDENTIAL -ErrorAction SilentlyContinue
