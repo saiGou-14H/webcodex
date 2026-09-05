@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-14"
+$script:WcScriptStamp = "2026-09-05-15"
 
 $script:WcConfigCommands = @(
   'menu', 'inject', 'reset', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
@@ -412,29 +412,71 @@ function Backup-WcCodexConfigOnce([string]$configPath) {
 # Apply the cached api key + base url as Codex's model provider ('kunkun').
 # The key itself is NOT written into config.toml: Codex reads it from the
 # OPENAI_API_KEY env var (env_key) that the launcher exports.
+# Apply the cached api key + base url straight into Codex config.toml.
+# Local execution: the key is written in plaintext, mirroring the user's
+# existing 'experimental_bearer_token' pattern. The provider block is the
+# one referenced by model_provider (else the first [model_providers.*]).
+# Original file is backed up once; reset restores it.
 function Apply-WcCodexConfig {
   $cfg = Load-WcConfig
+  $apiKey = [string]$cfg['apikey']
   $base = [string]$cfg['api_base_url']
   if (-not $base) { $base = $env:OPENAI_BASE_URL }
-  if (-not $base) {
-    Write-Host "[codex] api_base_url not set - skipping Codex config edit (use: kunkun-tools.bat set-api-base <url>)"
-    Write-Host "        (OPENAI_API_KEY is still exported at launch; Codex only needs the provider if it has a custom base_url)"
+  if (-not $apiKey -and -not $base) {
+    Write-Host "[codex] nothing to apply (apikey / api_base_url empty)"
     return
   }
   $codexConfig = Get-WcCodexConfigPath
   Backup-WcCodexConfigOnce $codexConfig
   $raw = ""
   if (Test-Path $codexConfig) { $raw = Get-Content $codexConfig -Raw -Encoding UTF8 }
-  # strip our previous edits (idempotent): model_provider line + [model_providers.kunkun] block
-  $raw = [regex]::Replace($raw, '(?ms)^\s*model_provider\s*=.*?(\r?\n){0,1}', '')
-  $raw = [regex]::Replace($raw, '(?ms)^\[model_providers\.kunkun\][^\[]*', '')
-  $baseEsc = $base -replace '\\', '\\'
-  $block = "`r`nmodel_provider = `"kunkun`"`r`n`r`n[model_providers.kunkun]`r`nname = `"kunkun`"`r`nbase_url = `"$baseEsc`"`r`nenv_key = `"OPENAI_API_KEY`"`r`nwire_api = `"responses`"`r`n"
-  $final = ($raw.TrimEnd() + $block)
+
+  $providerRegex = '(?ms)^\[model_providers\.(?<id>[^\]]+)\]\r?\n(?<body>.*?)(?=\r?\n\[|\z)'
+  $blocks = [regex]::Matches($raw, $providerRegex)
+  $targetId = $null
+  $mp = [regex]::Match($raw, '(?m)^\s*model_provider\s*=\s*"?([\w\-\.]+)"?')
+  if ($mp.Success) { $targetId = $mp.Groups[1].Value }
+
+  $chosen = $null
+  foreach ($b in $blocks) {
+    if ($b.Groups['id'].Value -eq $targetId) { $chosen = $b; break }
+  }
+  if (-not $chosen -and $blocks.Count -gt 0) { $chosen = $blocks[0] }
+
+  if ($chosen) {
+    $id = $chosen.Groups['id'].Value
+    $body = $chosen.Groups['body'].Value
+    if ($apiKey) {
+      if ($body -match '(?m)^\s*experimental_bearer_token\s*=.*$') {
+        $body = [regex]::Replace($body, '(?m)^\s*experimental_bearer_token\s*=.*$', ('experimental_bearer_token = "' + $apiKey + '"'))
+      } else {
+        $body = 'experimental_bearer_token = "' + $apiKey + '"' + "`r`n" + $body
+      }
+    }
+    if ($base) {
+      if ($body -match '(?m)^\s*base_url\s*=.*$') {
+        $body = [regex]::Replace($body, '(?m)^\s*base_url\s*=.*$', ('base_url = "' + $base + '"'))
+      } else {
+        $body = 'base_url = "' + $base + '"' + "`r`n" + $body
+      }
+    }
+    $replacement = "[model_providers." + $id + "]`r`n" + $body.TrimEnd() + "`r`n"
+    $raw = $raw.Remove($chosen.Index, $chosen.Length).Insert($chosen.Index, $replacement)
+    Write-Host ("[codex] patched provider '" + $id + "' (inline experimental_bearer_token" + $(if ($base) { " + base_url" } else { "" }) + ") -> " + $codexConfig)
+  } else {
+    $providerId = "kunkun"
+    $raw = [regex]::Replace($raw, '(?m)^\s*model_provider\s*=.*?$', '')
+    $blockText = "`r`nmodel_provider = `"" + $providerId + "`"`r`n`r`n[model_providers." + $providerId + "]`r`nname = `"kunkun`"`r`n"
+    if ($base) { $blockText += "base_url = `"" + $base + "`"`r`n" }
+    $blockText += "wire_api = `"responses`"`r`n"
+    if ($apiKey) { $blockText += "experimental_bearer_token = `"" + $apiKey + "`"`r`n" }
+    $raw = ($raw.TrimEnd() + $blockText)
+    Write-Host ("[codex] created provider '" + $providerId + "' (inline token) -> " + $codexConfig)
+  }
+
   if (-not (Test-Path (Split-Path $codexConfig -Parent))) { New-Item -ItemType Directory -Path (Split-Path $codexConfig -Parent) -Force | Out-Null }
-  [System.IO.File]::WriteAllText($codexConfig, $final, (New-Object System.Text.UTF8Encoding($false)))
-  Write-Host ("[codex] applied provider 'kunkun' -> " + $codexConfig)
-  Write-Host ("        base_url=" + $base + ", key from env OPENAI_API_KEY (original backed up; reset restores)")
+  [System.IO.File]::WriteAllText($codexConfig, $raw, (New-Object System.Text.UTF8Encoding($false)))
+  Write-Host "        (plaintext, local-only; original backed up; reset restores)"
 }
 
 function Set-WcApiBase {

@@ -29,7 +29,7 @@ Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱
 | `set-tunnel <url> [bearer]` | 配置 Tunnel 模式用的 MCP 端点与（可选）注入的 Bearer |
 | `set-server-token <t>` | 缓存**服务器管理员令牌** `WEBCODEX_TOKEN`（方案 B 专用；用于客户端签发配对码） |
 | `set-allowed-root <path>` | 设置 Runner 的 allowed root（`pair` 登录时使用，如 `D:\work`） |
-| `set-api-base <url>` | 设置 Codex 模型 Base URL（**自动改写 `~\.codex\config.toml`：`model_provider=kunkun` + `[model_providers.kunkun]`，key 走 `OPENAI_API_KEY` env；改前自动备份原始文件**） |
+| `set-api-base <url>` | 设置 Codex 模型 Base URL（`set-apikey`/`edit-apikey` 会**明文改写 `~\codex\config.toml` 的 `[model_providers.*]`**：更新 `experimental_bearer_token`、`base_url`；本地执行无需加密；改前自动备份原始文件，`reset` 可还原） |
 | `pair [client-id]` | **方案 B 一键注册**：客户端调 `pairing create`（用管理员令牌，令牌经环境变量传递不落命令行）拿随机 `wc_pair_*` → 立刻自动 `login` 消费 |
 | `show-config` | 查看全部缓存配置（密文脱敏） |
 | `help` | 列出所有子命令 |
