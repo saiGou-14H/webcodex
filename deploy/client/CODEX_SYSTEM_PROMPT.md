@@ -1,4 +1,4 @@
-# Codex WebCodex MCP —— 项目级系统注入提示词（含全部 44 个工具）
+# Codex WebCodex MCP —— 项目级系统注入提示词（含全部 49 个工具）
 
 > 给 Codex（或任意 MCP 客户端）注入的项目级指令：只用 WebCodex MCP 工具，禁用本地 shell/文件工具，
 > 在**本会话选定的 WebCodex 项目**上干活（不写死任何绝对路径）。对应 WebCodex MCP：`https://chatgpt.kunkun.chat/mcp`。
@@ -15,20 +15,20 @@
 - 可写边界以 Runner 为该项目注册的 **allowed_root** 为准（`project_overview` 会返回）；只在该边界内操作，**严禁硬编码任何绝对路径**。
 
 # 硬性规则（违反即失败）
-1. 只使用下面列出的 WebCodex MCP 工具；**禁止用你自己的本地 shell / apply_patch / 文件读写工具**操作项目。
+1. 只使用下面列出的 WebCodex MCP 工具；**禁止用你自己的本地 shell / apply_patch / 文件读写工具**操作项目（WebCodex MCP 自身提供的 `apply_patch`/`apply_unified_diff` 除外）。
 2. 只在你当前通过 `work_on_project` 打开的项目范围内操作；尊重其 `allowed_root`，不越界、不复用别的项目路径。
 3. 全程**只读优先**；任何写入/执行前先 `show_changes` 向用户展示将要改动。
 
-# 可用工具（共 44 个，按类）
+# 可用工具（共 49 个，按类，2026-09-05 主分支 tools/list 实测）
 
-## 项目打开 / 选择
-work_on_project · list_projects · project_overview · list_project_files · list_project_tracked_files · workspace_symbols · workspace_hygiene_check
+## 项目 / 会话
+work_on_project · list_projects · get_session_assignment · complete_session_message · project_overview · list_project_files · list_project_tracked_files
 
 ## 文件读取 / 搜索
 read_file · read_files · search_project_text · search_project_texts
 
 ## 修改文件
-apply_text_edits（replace_exact/insert_before/insert_after/delete_exact，需 expected_sha256）· apply_patch_checked（多文件 unified diff）
+apply_text_edits（replace_exact/insert_before/insert_after/delete_exact，需 expected_sha256）· apply_patch（常规 patch）· apply_unified_diff（unified diff）· apply_patch_checked
 
 ## 变更审查 / 校验
 show_changes · validation_summary · workspace_hygiene_check
@@ -46,16 +46,19 @@ run_job · list_jobs · job_status · job_log · observe_jobs · stop_job · fin
 cargo_check · cargo_fmt · cargo_test · go_test
 
 ## 代码导航（LSP）
-goto_definition · find_references · call_hierarchy · hover · document_symbols · document_diagnostics · lsp_status
+goto_definition · find_references · call_hierarchy · hover · document_symbols · document_diagnostics · lsp_status · workspace_symbols
 
 ## 委托编码 Agent（路径 B，可选）
 coding_agent_start · coding_agent_observe · coding_agent_cancel
+
+## 其他（高级/通用）
+mcp_tool · plugin_tool
 
 # 标准工作流（按顺序）
 1. **打开/确认**：`list_projects` → `work_on_project` 打开目标项目（或 `session_id` 续接），再 `project_overview` 拿到 project id + session，确认根目录与 allowed_root。
 2. **只读理解**：`project_overview` → `list_project_files`/`list_project_tracked_files` → `read_file`/`read_files` → `search_project_text(s)`；跨文件用 `goto_definition`/`find_references`/`call_hierarchy`/`hover`/`document_symbols`/`document_diagnostics`/`workspace_symbols`/`lsp_status`。
 3. **规划**：列出改动清单/缺口，必要时 `task` 或询问用户。
-4. **修改**：`read_file` 拿 `expected_sha256` → `apply_text_edits`（或复杂用 `apply_patch_checked`）→ 改前 `show_changes`。
+4. **修改**：`read_file` 拿 `expected_sha256` → `apply_text_edits`（或 `apply_patch`/`apply_unified_diff`/`apply_patch_checked`）→ 改前 `show_changes`。
 5. **验证**：用项目自身定义的构建/测试命令（`run_process`/`run_script`/`run_shell`，或 `cargo_test`/`go_test`）；看 `document_diagnostics`、`validation_summary`；长任务用 `run_job`+`observe_jobs`/`job_status`/`job_log`，结束 `job_log`/`finish_coding_task`。**不要假定技术栈或路径**，按项目实际工具链来。
 6. **审阅收尾**：`show_changes` + `git_diff`/`git_diff_hunks`/`git_status`/`git_log`/`git_review_summary` + `workspace_hygiene_check`；最后汇总：改了哪些文件、为什么、实现哪些需求、测试结果、剩余问题。
 
@@ -66,12 +69,13 @@ coding_agent_start · coding_agent_observe · coding_agent_cancel
 # 工具→场景速查
 - 找项目：`list_projects` → `work_on_project` → `project_overview`/`list_project_files`（确认根目录与 allowed_root）
 - 读：`read_file(s)`/`search_project_text(s)`
-- 改：`apply_text_edits`/`apply_patch_checked`（改前 `show_changes`）
+- 改：`apply_text_edits`/`apply_patch`/`apply_unified_diff`/`apply_patch_checked`（改前 `show_changes`）
 - 跑：`run_process`/`run_script`/`run_shell`；长任务 `run_job`+`job*`
 - 测：`cargo_test`/`go_test`/`run_script`；`document_diagnostics`/`validation_summary`
 - Git：`git_status`/`git_diff`/`git_diff_hunks`/`git_log`/`git_review_summary`
 - 导航：`goto_definition`/`find_references`/`call_hierarchy`/`hover`/`document_symbols`/`workspace_symbols`
 - 委托（可选）：`coding_agent_start`/`coding_agent_observe`/`coding_agent_cancel`
+- 高级：`mcp_tool`/`plugin_tool`
 ```
 
 ## 注入位置
@@ -82,8 +86,8 @@ coding_agent_start · coding_agent_observe · coding_agent_cancel
 | **Codex 系统提示词 / `-c instructions=...`** | 作为系统指令注入 |
 | **会话首条指令** | 每个会话开头粘贴上面的 markdown |
 
-> 搭配：`codex mcp add kunkun-tools --url https://chatgpt.kunkun.chat/mcp --bearer-token-env-var WEBCODEX_BEARER` + cwd 空目录 + `--sandbox read-only`。
+> 搭配：用 `kunkun-tools.bat add-mcp`（自动签发 `wc_pat` 并**直接写入** Codex 配置 `[mcp_servers.kunkun-tools]` + `http_headers.Authorization = "Bearer ..."`，无需环境变量）+ cwd 空目录 + `--sandbox read-only`。
 >
 > ⚠️ 这段提示词是**项目级、可复用**的：不含任何硬编码路径。项目身份与 allowed_root 一律在运行时通过 `work_on_project`/`project_overview` 确定，换项目无需改动提示词。
 
-> ⚠️ 工具清单以 MCP `tools/list` 返回为准（44 个，2026-09-04 用 codex-mcp token 实测）。若 Server 更新，重新 `tools/list` 刷新此清单。
+> ⚠️ 工具清单以 MCP `tools/list` 返回为准（49 个，2026-09-05 主分支实测）。若 Server 更新，重新 `tools/list` 刷新此清单。
