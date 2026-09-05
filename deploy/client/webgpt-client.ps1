@@ -76,6 +76,36 @@ Write-Host "[7] HOME=$env:HOME"
 Write-Host "    CODEX_HOME=$env:CODEX_HOME"
 Write-Host "    CODEX_CMD=$env:CODEX_CMD"
 
+# ---- [7b] prompt injection: inject project-level instructions into Codex via AGENTS.md ----
+# Codex auto-loads $CODEX_HOME\AGENTS.md (global instructions) on every session, so we
+# stage our WebCodex MCP prompt there. Source order: $env:WC_INSTRUCTIONS_FILE, then
+# AGENTS.md, then CODEX_SYSTEM_PROMPT.md next to this script. If the source is
+# CODEX_SYSTEM_PROMPT.md (a doc with surrounding prose), extract the ```markdown block.
+function Get-InjectContent([string]$path) {
+  $raw = Get-Content $path -Raw
+  $m = [regex]::Match($raw, '(?s)```markdown\s*\r?\n(.*?)\r?\n```')
+  if ($m.Success) { return $m.Groups[1].Value.TrimEnd() }
+  return $raw.TrimEnd()
+}
+$injectSrc = $env:WC_INSTRUCTIONS_FILE
+if (-not $injectSrc) {
+  foreach ($cand in @((Join-Path $PSScriptRoot "AGENTS.md"), (Join-Path $PSScriptRoot "CODEX_SYSTEM_PROMPT.md"))) {
+    if ($cand -and (Test-Path $cand)) { $injectSrc = $cand; break }
+  }
+}
+if ($injectSrc -and (Test-Path $injectSrc)) {
+  if (-not (Test-Path $env:CODEX_HOME)) { New-Item -ItemType Directory -Path $env:CODEX_HOME -Force | Out-Null }
+  $dest = Join-Path $env:CODEX_HOME "AGENTS.md"
+  $content = Get-InjectContent $injectSrc
+  $lineCount = ($content -split "`n").Count
+  [System.IO.File]::WriteAllText($dest, $content, (New-Object System.Text.UTF8Encoding($false)))
+  Write-Host "[7b] injected Codex instructions   -> $dest"
+  Write-Host "        (from $injectSrc, $lineCount lines)"
+} else {
+  Write-Host "[7b] no instructions file found — skipping prompt injection"
+  Write-Host "        (set WC_INSTRUCTIONS_FILE or drop AGENTS.md next to this script)"
+}
+
 # ---- run runner ----
 Write-Host "[8] starting runner: node $cli agent run --config $agent"
 & $node $cli agent run --config $agent

@@ -37,6 +37,10 @@ set "WC_CLI=%CLI%"
 set "WC_PROXY=%PROXY%"
 set "WC_AGENT=%AGENT%"
 
+REM --- prompt injection (optional): pass an AGENTS.md/instructions file as arg 1 ---
+if not "%~1"=="" set "WC_INSTRUCTIONS_FILE=%~1"
+if defined WC_INSTRUCTIONS_FILE echo [.] instructions file = %WC_INSTRUCTIONS_FILE%
+
 if not exist "%DIR%webgpt-client.ps1" (
   echo [x] webgpt-client.ps1 not found next to this bat.
   pause
