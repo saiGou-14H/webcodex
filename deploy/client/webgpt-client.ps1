@@ -73,11 +73,11 @@ id = "codex"
 name = "Codex"
 executable = "$nod"
 args = ["$pxy"]
-env_from_env = { "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME", "PATH" = "PATH", "CODEX_CMD" = "CODEX_CMD" }
+env_from_env = { "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME", "PATH" = "PATH", "CODEX_CMD" = "CODEX_CMD", "WEBCODEX_BEARER" = "WEBCODEX_BEARER", "OPENAI_API_KEY" = "OPENAI_API_KEY", "OPENAI_BASE_URL" = "OPENAI_BASE_URL" }
 allowed_config_options = []
 "@
 Set-Content $agent -Value ($raw.TrimEnd() + "`r`n" + $block) -NoNewline
-Write-Host "[6] [acp] written to agent.toml (with PATH)"
+Write-Host "[6] [acp] written to agent.toml (with PATH + WEBCODEX_BEARER/OPENAI_API_KEY/OPENAI_BASE_URL)"
 
 # ---- env ----
 $env:HOME = $env:USERPROFILE
