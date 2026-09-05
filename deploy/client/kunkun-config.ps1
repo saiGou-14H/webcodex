@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-16"
+$script:WcScriptStamp = "2026-09-05-17"
 
 $script:WcConfigCommands = @(
   'menu', 'inject', 'reset', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
@@ -689,22 +689,34 @@ function Get-WcEffectiveMcpUrl {
   return $null
 }
 
+# Write the Codex MCP server entry DIRECTLY into config.toml (no env var):
+#   [mcp_servers.kunkun-tools]  url = ...
+#   [mcp_servers.kunkun-tools.http_headers]  Authorization = "Bearer <token>"
+# Strips any previous kunkun-tools / webcodex blocks (incl. bearer_token_env_var
+# style) so reruns migrate cleanly. config.toml original is backed up once.
 function Apply-WcMcpConfig {
   $url = Get-WcEffectiveMcpUrl
   if (-not $url) { Write-Host "[!] no MCP url available; set server-url or tunnel url first"; return }
-  $codex = Get-WcCodexCmd
-  if (-not $codex) {
-    Write-Host "[!] codex not found; configure manually:"
-    Write-Host ("      codex mcp add kunkun-tools --url " + $url + " --bearer-token-env-var WEBCODEX_BEARER")
+  $cfg = Load-WcConfig
+  $bearer = [string]$cfg['mcp'].bearer
+  if (-not $bearer) {
+    Write-Host "[!] no MCP bearer cached (run 'kunkun-tools.bat add-mcp' first)"
     return
   }
-  # migrate: drop the legacy 'webcodex' MCP entry (best effort) before adding ours
-  $legacy = Invoke-NativeCapture -Exe $codex -ArgList @('mcp', 'remove', 'webcodex')
-  if ($legacy.out -and $legacy.out.Trim()) { Write-Host ("[mcp] removed legacy 'webcodex': " + $legacy.out.Trim()) }
-  Write-Host ("[mcp] codex mcp add kunkun-tools --url " + $url + " --bearer-token-env-var WEBCODEX_BEARER")
-  $rc = Invoke-NativeCapture -Exe $codex -ArgList @('mcp', 'add', 'kunkun-tools', '--url', $url, '--bearer-token-env-var', 'WEBCODEX_BEARER')
-  if ($rc.out) { Write-Host $rc.out }
-  if ($rc.err) { Write-Host $rc.err }
+  $codexConfig = Get-WcCodexConfigPath
+  Backup-WcCodexConfigOnce $codexConfig
+  $raw = ""
+  if (Test-Path $codexConfig) { $raw = Get-Content $codexConfig -Raw -Encoding UTF8 }
+  # remove previous managed blocks (section header + its non-header lines, incl. subtable)
+  foreach ($name in @('kunkun-tools', 'webcodex')) {
+    $raw = [regex]::Replace($raw, '(?ms)^\[mcp_servers\.' + [regex]::Escape($name) + '[^\]]*\]\r?\n(?:(?![ \t]*\[).*\r?\n?)*', '')
+  }
+  $block = "`r`n[mcp_servers.kunkun-tools]`r`nurl = `"" + $url + "`"`r`n`r`n[mcp_servers.kunkun-tools.http_headers]`r`nAuthorization = `"Bearer " + $bearer + "`"`r`n"
+  $final = ($raw.TrimEnd() + $block)
+  if (-not (Test-Path (Split-Path $codexConfig -Parent))) { New-Item -ItemType Directory -Path (Split-Path $codexConfig -Parent) -Force | Out-Null }
+  [System.IO.File]::WriteAllText($codexConfig, $final, (New-Object System.Text.UTF8Encoding($false)))
+  Write-Host ("[mcp] wrote kunkun-tools DIRECTLY -> " + $codexConfig)
+  Write-Host ("        url=" + $url + " , Authorization=Bearer ****" + $(if ($bearer.Length -gt 4) { $bearer.Substring($bearer.Length - 4) } else { "" }) + " (no env var; original backed up)")
 }
 
 # ---- add-mcp: mint wc_pat_xxx via `webcodex tokens create-local` + configure Codex MCP ----

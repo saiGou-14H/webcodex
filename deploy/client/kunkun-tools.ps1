@@ -81,11 +81,11 @@ id = "codex"
 name = "Codex"
 executable = "$nod"
 args = ["$pxy"]
-env_from_env = { "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME", "PATH" = "PATH", "CODEX_CMD" = "CODEX_CMD", "WEBCODEX_BEARER" = "WEBCODEX_BEARER", "OPENAI_API_KEY" = "OPENAI_API_KEY", "OPENAI_BASE_URL" = "OPENAI_BASE_URL" }
+env_from_env = { "HOME" = "HOME", "CODEX_HOME" = "CODEX_HOME", "PATH" = "PATH", "CODEX_CMD" = "CODEX_CMD" }
 allowed_config_options = []
 "@
 Set-Content $agent -Value ($raw.TrimEnd() + "`r`n" + $block) -NoNewline
-Write-Host "[6] [acp] written to agent.toml (with PATH + WEBCODEX_BEARER/OPENAI_API_KEY/OPENAI_BASE_URL)"
+Write-Host "[6] [acp] written to agent.toml (with PATH)"
 
 # ---- env ----
 $env:HOME = $env:USERPROFILE
@@ -102,26 +102,12 @@ if (Get-Command Invoke-WcPromptInjection -ErrorAction SilentlyContinue) {
   Write-Host "[7b] prompt injection skipped (config library not loaded)"
 }
 
-# ---- [7c] apply cached connection config (mode / bearer / apikey) ----
+# ---- [7c] note: credentials are written directly into Codex config.toml ----
 if (Get-Command Load-WcConfig -ErrorAction SilentlyContinue) {
   $wcCfg = Load-WcConfig
   if ($wcCfg -and $wcCfg.Count -gt 0) {
     Write-Host ("[7c] connection mode = " + [string]$wcCfg['mode'])
-    if ([string]$wcCfg['apikey']) {
-      $env:OPENAI_API_KEY = [string]$wcCfg['apikey']
-      Write-Host ("      OPENAI_API_KEY  = " + (Mask-Secret ([string]$wcCfg['apikey'])))
-    }
-    if ([string]$wcCfg['api_base_url']) {
-      $env:OPENAI_BASE_URL = [string]$wcCfg['api_base_url']
-      Write-Host ("      OPENAI_BASE_URL = " + [string]$wcCfg['api_base_url'])
-    }
-    if ([string]$wcCfg['mode'] -eq 'tunnel' -and $wcCfg['tunnel'] -and [string]$wcCfg['tunnel'].bearer) {
-      $env:WEBCODEX_BEARER = [string]$wcCfg['tunnel'].bearer
-      Write-Host ("      WEBCODEX_BEARER = " + (Mask-Secret ([string]$wcCfg['tunnel'].bearer)) + " (tunnel)")
-    } elseif ($wcCfg['mcp'] -and [string]$wcCfg['mcp'].bearer) {
-      $env:WEBCODEX_BEARER = [string]$wcCfg['mcp'].bearer
-      Write-Host ("      WEBCODEX_BEARER = " + (Mask-Secret ([string]$wcCfg['mcp'].bearer)) + " (mcp)")
-    }
+    Write-Host "      (Codex MCP bearer and model key are in ~/.codex/config.toml directly - no env vars needed)"
   }
 }
 
