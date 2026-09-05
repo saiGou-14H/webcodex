@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) const MAX_WRITE_CONTENT_BYTES: usize = 256 * 1024; // 256 KiB
 
-/// Maximum serialized batch payload sent to the owning agent. Host-only (the
+/// Maximum serialized batch payload sent to the owning Runner. Host-only (the
 /// agent enforces a per-file cap instead), so it stays local.
 pub(crate) const MAX_APPLY_FILE_CHANGES_BYTES: usize = 1024 * 1024;
 
@@ -122,7 +122,7 @@ async fn await_structured_edit_response(
         Ok(Err(_)) => {
             let state = dispatch_uncertainty_lifecycle(
                 runtime
-                    .shell_clients
+                    .runner_registry
                     .cancel_request_dispatch_state(request_id)
                     .await,
             );
@@ -135,7 +135,7 @@ async fn await_structured_edit_response(
         Err(_) => {
             let state = dispatch_uncertainty_lifecycle(
                 runtime
-                    .shell_clients
+                    .runner_registry
                     .cancel_request_dispatch_state(request_id)
                     .await,
             );
@@ -179,7 +179,7 @@ fn apply_text_edit_occurrence_capability_rejection(reason: impl AsRef<str>) -> T
             "state_changed": false,
             "error_kind": "agent_capability_unavailable",
             "failure_kind": "capability_unavailable",
-            "capability": crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_TEXT_EDIT_OCCURRENCE,
+            "capability": crate::runner_protocol::RUNNER_CAPABILITY_APPLY_TEXT_EDIT_OCCURRENCE,
             "retry_guidance": "reconnect the Runner or refine the edit to a unique exact match without occurrence"
         }),
     )
@@ -195,7 +195,7 @@ fn apply_text_edit_line_scope_capability_rejection(reason: impl AsRef<str>) -> T
             "state_changed": false,
             "error_kind": "agent_capability_unavailable",
             "failure_kind": "capability_unavailable",
-            "capability": crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_TEXT_EDIT_LINE_SCOPE,
+            "capability": crate::runner_protocol::RUNNER_CAPABILITY_APPLY_TEXT_EDIT_LINE_SCOPE,
             "retry_guidance": "reconnect a Runner with apply_text_edit_line_scope support; never silently downgrade a scoped edit to an unscoped edit"
         }),
     )
@@ -236,7 +236,7 @@ fn apply_patch_strict_matching_capability_rejection(reason: impl AsRef<str>) -> 
             "execution_state": "not_started",
             "error_kind": "agent_capability_unavailable",
             "failure_kind": "capability_unavailable",
-            "capability": crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_PATCH_STRICT_MATCHING,
+            "capability": crate::runner_protocol::RUNNER_CAPABILITY_APPLY_PATCH_STRICT_MATCHING,
             "recovery_action": "upgrade_or_reconnect_runner",
             "retry_guidance": "reconnect or upgrade the Runner so it explicitly advertises apply_patch_strict_matching; never silently downgrade a strict patch"
         }),
@@ -652,6 +652,23 @@ const APPLY_PATCH_FAILURE_MATCH_DIAGNOSTIC_FIELDS: [&str; 10] = [
     "first_exact_mismatch_offset",
 ];
 
+const APPLY_PATCH_RECOVERY_MARGIN_BEFORE: usize = 8;
+const APPLY_PATCH_RECOVERY_MARGIN_AFTER: usize = 8;
+
+#[derive(Debug)]
+struct ValidatedApplyPatchStrictRejection {
+    change_index: usize,
+    chunk_index: usize,
+    path: String,
+    match_mode: &'static str,
+    match_source: &'static str,
+    matched_start_line: usize,
+    candidate_count: usize,
+    expected_line_count: usize,
+    source_line_count: usize,
+    classification: &'static str,
+}
+
 fn expected_apply_patch_failure_pattern_len(
     hunk: &crate::apply_patch_shared::CodexPatchHunk,
     chunk_index: usize,
@@ -670,6 +687,173 @@ fn expected_apply_patch_failure_pattern_len(
         }
         _ => None,
     }
+}
+
+fn validated_apply_patch_strict_rejection(
+    patch: &crate::apply_patch_shared::CodexPatch,
+    failure_output: &Value,
+    expected_strict_matching: bool,
+) -> Option<ValidatedApplyPatchStrictRejection> {
+    if !expected_strict_matching
+        || failure_output.get("changed").and_then(Value::as_bool) != Some(false)
+        || failure_output.get("state_changed").and_then(Value::as_bool) != Some(false)
+        || failure_output
+            .get("execution_state")
+            .and_then(Value::as_str)
+            != Some("not_started")
+        || failure_output.get("error_kind").and_then(Value::as_str) != Some("strict_match_rejected")
+        || failure_output.get("strict_match").and_then(Value::as_bool) != Some(false)
+    {
+        return None;
+    }
+
+    let change_index = failure_output
+        .get("change_index")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let hunk = patch.hunks.get(change_index)?;
+    if failure_output.get("path").and_then(Value::as_str) != Some(hunk.path()) {
+        return None;
+    }
+    let crate::apply_patch_shared::CodexPatchHunk::UpdateFile { chunks, .. } = hunk else {
+        return None;
+    };
+    let chunk_index = failure_output
+        .get("chunk_index")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let chunk = chunks.get(chunk_index)?;
+    let match_source = match failure_output.get("match_source").and_then(Value::as_str)? {
+        "old_lines" if !chunk.old_lines.is_empty() => "old_lines",
+        "change_context" if chunk.change_context.is_some() => "change_context",
+        _ => {
+            // Unanchored append performs no text matching and is strict-safe;
+            // other sources contradict the parsed chunk shape.
+            return None;
+        }
+    };
+    let expected_line_count =
+        expected_apply_patch_failure_pattern_len(hunk, chunk_index, match_source)?;
+    let match_mode = match failure_output.get("match_mode").and_then(Value::as_str)? {
+        "exact" => "exact",
+        "trim_end" => "trim_end",
+        "trim" => "trim",
+        _ => return None,
+    };
+    let matched_start_line = failure_output
+        .get("matched_start_line")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let search_start_line = failure_output
+        .get("search_start_line")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let source_line_count = failure_output
+        .get("source_line_count")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    if matched_start_line == 0 || search_start_line == 0 || source_line_count < expected_line_count
+    {
+        return None;
+    }
+    let last_start_line = source_line_count
+        .checked_sub(expected_line_count)?
+        .checked_add(1)?;
+    if search_start_line > last_start_line
+        || matched_start_line < search_start_line
+        || matched_start_line > last_start_line
+    {
+        return None;
+    }
+    let max_candidate_count = last_start_line
+        .checked_sub(search_start_line)?
+        .checked_add(1)?;
+    let candidate_count = failure_output
+        .get("candidate_count")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    if candidate_count == 0 || candidate_count > max_candidate_count {
+        return None;
+    }
+
+    let classification = if candidate_count == 1 {
+        if match_mode == "exact" {
+            // Exact + unique is strict-safe and therefore contradicts the
+            // reported rejection.
+            return None;
+        }
+        "unique_fuzzy_candidate"
+    } else {
+        "ambiguous_candidate"
+    };
+    Some(ValidatedApplyPatchStrictRejection {
+        change_index,
+        chunk_index,
+        path: hunk.path().to_string(),
+        match_mode,
+        match_source,
+        matched_start_line,
+        candidate_count,
+        expected_line_count,
+        classification,
+        source_line_count,
+    })
+}
+
+fn apply_patch_strict_rejection_recovery(
+    rejection: &ValidatedApplyPatchStrictRejection,
+) -> Option<Value> {
+    if rejection.classification != "unique_fuzzy_candidate" {
+        return None;
+    }
+    let start_line = rejection
+        .matched_start_line
+        .saturating_sub(APPLY_PATCH_RECOVERY_MARGIN_BEFORE)
+        .max(1);
+    let requested_limit = rejection
+        .expected_line_count
+        .saturating_add(APPLY_PATCH_RECOVERY_MARGIN_BEFORE)
+        .saturating_add(APPLY_PATCH_RECOVERY_MARGIN_AFTER)
+        .min(crate::apply_patch_shared::MAX_CODEX_PATCH_RECOVERY_READ_LINES)
+        .max(1);
+    let available_from_start = rejection
+        .source_line_count
+        .checked_sub(start_line)?
+        .checked_add(1)?;
+    let limit = requested_limit.min(available_from_start);
+    if limit == 0 {
+        return None;
+    }
+    Some(json!({
+        "action": "read_files",
+        "reason": "strict_match_rejected_unique_fuzzy",
+        "items": [{
+            "path": rejection.path.as_str(),
+            "start_line": start_line,
+            "limit": limit,
+        }],
+        "change_index": rejection.change_index,
+        "chunk_index": rejection.chunk_index,
+    }))
+}
+
+fn apply_patch_strict_rejection_diagnostic(
+    rejection: &ValidatedApplyPatchStrictRejection,
+) -> Value {
+    json!({
+        "classification": rejection.classification,
+        "chunk_index": rejection.chunk_index,
+        "match_mode": rejection.match_mode,
+        "match_source": rejection.match_source,
+        "matched_start_line": if rejection.classification == "unique_fuzzy_candidate" {
+            Some(rejection.matched_start_line)
+        } else {
+            None
+        },
+        "candidate_count": rejection.candidate_count,
+        "expected_line_count": rejection.expected_line_count,
+        "strict_match": false,
+    })
 }
 
 fn valid_apply_patch_failure_match_diagnostic(
@@ -777,10 +961,202 @@ fn valid_apply_patch_failure_match_diagnostic(
     closest_start_valid && mismatch_valid
 }
 
-fn sanitize_apply_patch_failure_metadata(
-    output: &mut Value,
+fn apply_patch_context_mismatch_recovery(
     patch: &crate::apply_patch_shared::CodexPatch,
+    failure_output: &Value,
+) -> Option<Value> {
+    if failure_output.get("changed").and_then(Value::as_bool) != Some(false)
+        || failure_output.get("state_changed").and_then(Value::as_bool) != Some(false)
+        || failure_output
+            .get("execution_state")
+            .and_then(Value::as_str)
+            != Some("not_started")
+        || failure_output.get("error_kind").and_then(Value::as_str) != Some("context_mismatch")
+    {
+        return None;
+    }
+
+    let diagnostic = failure_output.get("match_diagnostic")?;
+    if !valid_apply_patch_failure_match_diagnostic(diagnostic, patch, failure_output) {
+        return None;
+    }
+    let change_index = failure_output
+        .get("change_index")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let hunk = patch.hunks.get(change_index)?;
+    let path = hunk.path();
+    let diagnostic = diagnostic.as_object()?;
+    let chunk_index = diagnostic
+        .get("chunk_index")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let search_start_line = diagnostic
+        .get("search_start_line")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let expected_line_count = diagnostic
+        .get("expected_line_count")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let available_line_count = diagnostic
+        .get("available_line_count")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let closest_start_line = diagnostic
+        .get("closest_start_line")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+    let first_exact_mismatch_offset = diagnostic
+        .get("first_exact_mismatch_offset")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())?;
+
+    let total_line_count = search_start_line
+        .checked_sub(1)?
+        .checked_add(available_line_count)?;
+    if total_line_count == 0 || closest_start_line > total_line_count {
+        return None;
+    }
+
+    let mismatch_line = closest_start_line
+        .checked_add(first_exact_mismatch_offset.checked_sub(1)?)?
+        .min(total_line_count);
+    let initial_start_line = closest_start_line
+        .saturating_sub(APPLY_PATCH_RECOVERY_MARGIN_BEFORE)
+        .max(1);
+    let requested_limit = expected_line_count
+        .saturating_add(APPLY_PATCH_RECOVERY_MARGIN_BEFORE)
+        .saturating_add(APPLY_PATCH_RECOVERY_MARGIN_AFTER)
+        .min(crate::apply_patch_shared::MAX_CODEX_PATCH_RECOVERY_READ_LINES);
+    // Short hunks retain context around the candidate start. Once the bounded
+    // read cap applies, shift only as far as needed to include the first known
+    // mismatch plus useful trailing context; otherwise a large stale hunk can
+    // return a window containing only lines that still match.
+    let desired_end_line = mismatch_line
+        .saturating_add(APPLY_PATCH_RECOVERY_MARGIN_AFTER)
+        .min(total_line_count);
+    let mismatch_centered_start = desired_end_line
+        .saturating_sub(requested_limit.saturating_sub(1))
+        .max(1);
+    let start_line = initial_start_line.max(mismatch_centered_start);
+    let available_from_start = total_line_count.checked_sub(start_line)?.checked_add(1)?;
+    let limit = requested_limit.min(available_from_start);
+    if limit == 0 {
+        return None;
+    }
+
+    Some(json!({
+        "action": "read_files",
+        "reason": "context_mismatch",
+        "items": [{
+            "path": path,
+            "start_line": start_line,
+            "limit": limit,
+        }],
+        "change_index": change_index,
+        "chunk_index": chunk_index,
+    }))
+}
+
+fn sanitize_apply_patch_strict_rejection(
+    result: &mut ToolResult,
+    patch: &crate::apply_patch_shared::CodexPatch,
+) -> bool {
+    if result.output.get("error_kind").and_then(Value::as_str) != Some("strict_match_rejected") {
+        return false;
+    }
+    let validated = validated_apply_patch_strict_rejection(patch, &result.output, true);
+    let (message, recovery_action, retry_guidance) = match validated.as_ref() {
+        Some(rejection) if rejection.classification == "unique_fuzzy_candidate" => (
+            "Rejected strict Codex patch before write: Server-validated positioning found one fuzzy candidate. No files were modified.".to_string(),
+            "reread_and_regenerate_strict_patch",
+            "read recovery.items, regenerate this chunk with exact unique context against the current source, and retry with strict_matching=true; do not relax strict matching",
+        ),
+        Some(_) => (
+            "Rejected strict Codex patch before write: Server-validated positioning is ambiguous, so no authoritative target location was selected. No files were modified.".to_string(),
+            "add_exact_unique_context",
+            "the current patch context matches multiple candidates; expand exact unique context and retry with strict_matching=true; do not select a candidate position or relax strict matching",
+        ),
+        None => (
+            "Rejected strict Codex patch before write: Runner strict-match metadata was invalid or contradictory and was suppressed. No files were modified.".to_string(),
+            "regenerate_strict_patch",
+            "do not trust the rejected target metadata; reread current source through normal read tooling as needed, regenerate exact unique context, and retry with strict_matching=true",
+        ),
+    };
+
+    if let Some(fields) = result.output.as_object_mut() {
+        fields.retain(|key, _| APPLY_PATCH_FAILURE_TOP_LEVEL_FIELDS.contains(&key.as_str()));
+        for key in [
+            "change_index",
+            "kind",
+            "path",
+            "patch_line",
+            "expected_format",
+            "match_diagnostic",
+            "capability",
+            "recovery_action",
+            "recovery_kind",
+            "recovery_tool",
+            "retry_guidance",
+            "error",
+        ] {
+            fields.remove(key);
+        }
+        fields.insert("recovery_action".to_string(), json!(recovery_action));
+        fields.insert("retry_guidance".to_string(), json!(retry_guidance));
+        fields.insert("error".to_string(), json!(message.as_str()));
+        if let Some(rejection) = validated.as_ref() {
+            fields.insert("change_index".to_string(), json!(rejection.change_index));
+            fields.insert("path".to_string(), json!(rejection.path.as_str()));
+            fields.insert(
+                "strict_match_diagnostic".to_string(),
+                apply_patch_strict_rejection_diagnostic(rejection),
+            );
+            if let Some(recovery) = apply_patch_strict_rejection_recovery(rejection) {
+                fields.insert("recovery".to_string(), recovery);
+            }
+        }
+    }
+    result.error = Some(message);
+    true
+}
+
+fn sanitize_apply_patch_failure_metadata(
+    result: &mut ToolResult,
+    patch: &crate::apply_patch_shared::CodexPatch,
+    expected_strict_matching: bool,
 ) {
+    if result.output.get("error_kind").and_then(Value::as_str) == Some("strict_match_rejected") {
+        if expected_strict_matching {
+            let _ = sanitize_apply_patch_strict_rejection(result, patch);
+        } else {
+            let message = "Rejected apply_patch result: Runner reported a strict-match rejection for a non-strict request; target metadata was suppressed.".to_string();
+            if let Some(fields) = result.output.as_object_mut() {
+                fields.retain(|key, _| {
+                    matches!(
+                        key.as_str(),
+                        "changed"
+                            | "state_changed"
+                            | "execution_state"
+                            | "error_kind"
+                            | "tool_failure"
+                    )
+                });
+                fields.insert("recovery_action".to_string(), json!("regenerate_patch"));
+                fields.insert(
+                    "retry_guidance".to_string(),
+                    json!("do not trust the rejected target metadata; regenerate the patch from current source before another write"),
+                );
+                fields.insert("error".to_string(), json!(message.as_str()));
+            }
+            result.error = Some(message);
+        }
+        return;
+    }
+
+    let output = &mut result.output;
+    let recovery = apply_patch_context_mismatch_recovery(patch, output);
     let diagnostic_valid = output
         .get("match_diagnostic")
         .is_none_or(|value| valid_apply_patch_failure_match_diagnostic(value, patch, output));
@@ -790,6 +1166,9 @@ fn sanitize_apply_patch_failure_metadata(
     fields.retain(|key, _| APPLY_PATCH_FAILURE_TOP_LEVEL_FIELDS.contains(&key.as_str()));
     if !diagnostic_valid {
         fields.remove("match_diagnostic");
+    }
+    if let Some(recovery) = recovery {
+        fields.insert("recovery".to_string(), recovery);
     }
 }
 
@@ -1018,7 +1397,7 @@ fn apply_patch_agent_stdout_result(
         expected_dry_run,
     );
     if !result.success {
-        sanitize_apply_patch_failure_metadata(&mut result.output, patch);
+        sanitize_apply_patch_failure_metadata(&mut result, patch, expected_strict_matching);
         return result;
     }
     sanitize_apply_patch_success_metadata(&mut result.output);
@@ -1471,7 +1850,7 @@ impl ToolRuntime {
             Err(_) => return ToolResult::err("failed to encode delete_project_files request"),
         };
         let (request_id, rx) = match self
-            .shell_clients
+            .runner_registry
             .enqueue_structured_file_delete(
                 ShellFileOpRequest {
                     op: "delete_project_files".to_string(),
@@ -1512,7 +1891,7 @@ impl ToolRuntime {
                 // undispatch, e.g. runner replacement before poll) or
                 // outcome_unknown (dispatched, or dispatch cannot be proven
                 // false — the Runner may already have deleted files).
-                let state = agent_command_lifecycle(&response, wait_timeout_secs);
+                let state = runner_command_lifecycle(&response, wait_timeout_secs);
                 match state {
                     ShellCommandExecutionState::Completed
                         if response.error.is_none() && response.exit_code == Some(0) =>
@@ -1539,7 +1918,7 @@ impl ToolRuntime {
                 // cannot prove undispatch, so only explicit `Some(false)` is
                 // not_started.
                 let dispatch = self
-                    .shell_clients
+                    .runner_registry
                     .cancel_request_dispatch_state(&request_id)
                     .await;
                 let state = dispatch_uncertainty_lifecycle(dispatch);
@@ -1560,7 +1939,7 @@ impl ToolRuntime {
                 // it. A timed-out mutation that may have dispatched must never
                 // be presented as definitely not started.
                 let dispatch = self
-                    .shell_clients
+                    .runner_registry
                     .cancel_request_dispatch_state(&request_id)
                     .await;
                 let state = dispatch_uncertainty_lifecycle(dispatch);
@@ -1661,7 +2040,7 @@ impl ToolRuntime {
             _ => {}
         }
 
-        // ---- Project resolution (agent-registered only) ----
+        // ---- Project resolution (Runner-registered only) ----
         let proj = match self.resolve_project(&project).await {
             Ok(p) => p,
             Err(e) => return ToolResult::err(e),
@@ -1676,7 +2055,7 @@ impl ToolRuntime {
         });
         let wait_timeout = 60_u64;
         let (request_id, rx) = match self
-            .shell_clients
+            .runner_registry
             .enqueue_file_op(
                 ShellFileOpRequest {
                     op: "write_project_file".to_string(),
@@ -1846,7 +2225,7 @@ impl ToolRuntime {
             wait_timeout_secs: wait_timeout,
         };
         let (request_id, rx) = match self
-            .shell_clients
+            .runner_registry
             .enqueue_apply_patch(
                 request,
                 expected_strict_matching,
@@ -1858,7 +2237,7 @@ impl ToolRuntime {
             Err(error)
                 if error.starts_with("capability_unavailable:")
                     && error.contains(
-                        crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_PATCH_STRICT_MATCHING,
+                        crate::runner_protocol::RUNNER_CAPABILITY_APPLY_PATCH_STRICT_MATCHING,
                     ) =>
             {
                 return apply_patch_strict_matching_capability_rejection(error)
@@ -1866,22 +2245,21 @@ impl ToolRuntime {
             Err(error)
                 if error.starts_with("capability_unavailable:")
                     && error.contains(
-                        crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_PATCH_MATCH_METADATA,
+                        crate::runner_protocol::RUNNER_CAPABILITY_APPLY_PATCH_MATCH_METADATA,
                     ) =>
             {
                 return apply_patch_capability_rejection(
                     error,
-                    crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_PATCH_MATCH_METADATA,
+                    crate::runner_protocol::RUNNER_CAPABILITY_APPLY_PATCH_MATCH_METADATA,
                 )
             }
             Err(error)
                 if error.starts_with("capability_unavailable:")
-                    && error
-                        .contains(crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_PATCH) =>
+                    && error.contains(crate::runner_protocol::RUNNER_CAPABILITY_APPLY_PATCH) =>
             {
                 return apply_patch_capability_rejection(
                     error,
-                    crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_PATCH,
+                    crate::runner_protocol::RUNNER_CAPABILITY_APPLY_PATCH,
                 )
             }
             Err(_) => {
@@ -2084,7 +2462,7 @@ impl ToolRuntime {
             wait_timeout_secs: wait_timeout,
         };
         let enqueue_result = if requires_line_scope_capability {
-            self.shell_clients
+            self.runner_registry
                 .enqueue_apply_text_edits_with_line_scope(
                     request,
                     "tool_runtime".to_string(),
@@ -2092,11 +2470,11 @@ impl ToolRuntime {
                 )
                 .await
         } else if requires_occurrence_capability {
-            self.shell_clients
+            self.runner_registry
                 .enqueue_apply_text_edits_with_occurrence(request, "tool_runtime".to_string())
                 .await
         } else {
-            self.shell_clients
+            self.runner_registry
                 .enqueue_file_op(request, "tool_runtime".to_string())
                 .await
         };
@@ -2105,7 +2483,7 @@ impl ToolRuntime {
             Err(e)
                 if e.starts_with("capability_unavailable:")
                     && e.contains(
-                        crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_TEXT_EDIT_LINE_SCOPE,
+                        crate::runner_protocol::RUNNER_CAPABILITY_APPLY_TEXT_EDIT_LINE_SCOPE,
                     ) =>
             {
                 return apply_text_edit_line_scope_capability_rejection(e)
@@ -2113,7 +2491,7 @@ impl ToolRuntime {
             Err(e)
                 if e.starts_with("capability_unavailable:")
                     && e.contains(
-                        crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_TEXT_EDIT_OCCURRENCE,
+                        crate::runner_protocol::RUNNER_CAPABILITY_APPLY_TEXT_EDIT_OCCURRENCE,
                     ) =>
             {
                 return apply_text_edit_occurrence_capability_rejection(e)
@@ -2194,6 +2572,71 @@ mod tests {
         .unwrap()
     }
 
+    fn update_patch_with_old_line_count(count: usize) -> crate::apply_patch_shared::CodexPatch {
+        assert!(count > 0);
+        let mut patch = String::from("*** Begin Patch\n*** Update File: file.txt\n");
+        for index in 0..count {
+            patch.push_str(&format!("-old-{index}\n"));
+        }
+        patch.push_str("+new\n*** End Patch");
+        crate::apply_patch_shared::parse_codex_patch(&patch).unwrap()
+    }
+
+    fn context_mismatch_payload(
+        expected_line_count: usize,
+        search_start_line: usize,
+        available_line_count: usize,
+        closest_start_line: Option<usize>,
+    ) -> Value {
+        json!({
+            "changed": false,
+            "state_changed": false,
+            "execution_state": "not_started",
+            "error_kind": "context_mismatch",
+            "change_index": 0,
+            "path": "file.txt",
+            "error": "Rejected Codex patch before write: context mismatch. No files were modified.",
+            "match_diagnostic": {
+                "chunk_index": 0,
+                "match_source": "old_lines",
+                "search_start_line": search_start_line,
+                "expected_line_count": expected_line_count,
+                "available_line_count": available_line_count,
+                "closest_start_line": closest_start_line,
+                "closest_exact_line_matches": 0,
+                "closest_trim_end_line_matches": 0,
+                "closest_trim_line_matches": 0,
+                "first_exact_mismatch_offset": 1
+            }
+        })
+    }
+
+    fn strict_rejection_payload(
+        match_mode: &str,
+        candidate_count: usize,
+        matched_start_line: usize,
+    ) -> Value {
+        json!({
+            "changed": false,
+            "state_changed": false,
+            "execution_state": "not_started",
+            "error_kind": "strict_match_rejected",
+            "change_index": 0,
+            "path": "file.txt",
+            "chunk_index": 0,
+            "match_mode": match_mode,
+            "match_source": "old_lines",
+            "matched_start_line": matched_start_line,
+            "candidate_count": candidate_count,
+            "strict_match": false,
+            "search_start_line": 1,
+            "source_line_count": 100,
+            "recovery_action": "RUNNER_MUST_NOT_CHOOSE_RECOVERY",
+            "retry_guidance": "RUNNER_MUST_NOT_CHOOSE_GUIDANCE",
+            "error": "RUNNER_MUST_NOT_CHOOSE_ERROR",
+        })
+    }
+
     #[test]
     fn apply_patch_strict_capability_rejection_names_exact_additive_capability() {
         let result = apply_patch_strict_matching_capability_rejection(
@@ -2206,7 +2649,7 @@ mod tests {
         assert_eq!(result.output["error_kind"], "agent_capability_unavailable");
         assert_eq!(
             result.output["capability"],
-            crate::shell_protocol::SHELL_CLIENT_CAPABILITY_APPLY_PATCH_STRICT_MATCHING
+            crate::runner_protocol::RUNNER_CAPABILITY_APPLY_PATCH_STRICT_MATCHING
         );
         assert_eq!(result.output["recovery_kind"], "retry_same");
         assert!(result.output["retry_guidance"]
@@ -2243,6 +2686,17 @@ mod tests {
         let result = apply_patch_agent_stdout_result(&valid.to_string(), &patch, false, true);
         assert!(!result.success);
         assert_eq!(result.output["match_diagnostic"]["closest_start_line"], 5);
+        let recovery_action = result.output["recovery"]["action"].as_str().unwrap();
+        assert_eq!(recovery_action, "read_files");
+        assert!(
+            crate::tool_runtime::tool_definition::is_adaptive_runtime_direct_tool(recovery_action)
+        );
+        assert_eq!(result.output["recovery"]["reason"], "context_mismatch");
+        assert_eq!(result.output["recovery"]["items"][0]["path"], "file.txt");
+        assert_eq!(result.output["recovery"]["items"][0]["start_line"], 1);
+        assert_eq!(result.output["recovery"]["items"][0]["limit"], 10);
+        assert_eq!(result.output["recovery"]["change_index"], 0);
+        assert_eq!(result.output["recovery"]["chunk_index"], 0);
         assert!(result.output.get("future_body_field").is_none());
         assert!(!serde_json::to_string(&result.output)
             .unwrap()
@@ -2267,6 +2721,14 @@ mod tests {
         let mut impossible_order = valid;
         impossible_order["match_diagnostic"]["closest_exact_line_matches"] = json!(1);
         cases.push(impossible_order);
+        let mut out_of_range_candidate = context_mismatch_payload(1, 3, 8, Some(11));
+        out_of_range_candidate["recovery"] = json!({
+            "action": "read_file",
+            "path": "other.txt",
+            "start_line": 999999,
+            "limit": 999999
+        });
+        cases.push(out_of_range_candidate);
 
         for invalid in cases {
             let result = apply_patch_agent_stdout_result(&invalid.to_string(), &patch, false, true);
@@ -2274,10 +2736,378 @@ mod tests {
             assert_eq!(result.output["execution_state"], "not_started");
             assert_eq!(result.output["state_changed"], false);
             assert!(result.output.get("match_diagnostic").is_none());
+            assert!(result.output.get("recovery").is_none());
             assert!(!serde_json::to_string(&result.output)
                 .unwrap()
                 .contains("must-not-survive"));
         }
+    }
+
+    #[test]
+    fn apply_patch_context_recovery_uses_deterministic_bounded_read_windows() {
+        let patch = update_patch_with_old_line_count(5);
+        let result = apply_patch_agent_stdout_result(
+            &context_mismatch_payload(5, 120, 50, Some(130)).to_string(),
+            &patch,
+            false,
+            false,
+        );
+        let schema = crate::tool_runtime::registry::output_schema_for_tool("apply_patch");
+        crate::tool_runtime::startup_brief::validate_schema_instance_for_test(
+            &serde_json::to_value(&result).unwrap(),
+            &schema,
+        )
+        .unwrap_or_else(|error| panic!("apply_patch recovery must match output schema: {error}"));
+        assert_eq!(result.output["recovery"]["items"][0]["start_line"], 122);
+        assert_eq!(result.output["recovery"]["items"][0]["limit"], 21);
+
+        let near_start = apply_patch_agent_stdout_result(
+            &context_mismatch_payload(5, 1, 20, Some(1)).to_string(),
+            &patch,
+            false,
+            false,
+        );
+        assert_eq!(near_start.output["recovery"]["items"][0]["start_line"], 1);
+        assert_eq!(near_start.output["recovery"]["items"][0]["limit"], 20);
+
+        let eof_partial = apply_patch_agent_stdout_result(
+            &context_mismatch_payload(5, 11, 2, Some(12)).to_string(),
+            &patch,
+            false,
+            false,
+        );
+        let recovery = &eof_partial.output["recovery"]["items"][0];
+        assert_eq!(recovery["start_line"], 4);
+        assert_eq!(recovery["limit"], 9);
+        assert_eq!(
+            recovery["start_line"].as_u64().unwrap() + recovery["limit"].as_u64().unwrap() - 1,
+            12
+        );
+
+        let large_patch = update_patch_with_old_line_count(100);
+        let large = apply_patch_agent_stdout_result(
+            &context_mismatch_payload(100, 1, 300, Some(100)).to_string(),
+            &large_patch,
+            false,
+            false,
+        );
+        assert_eq!(
+            large.output["recovery"]["items"][0]["limit"],
+            crate::apply_patch_shared::MAX_CODEX_PATCH_RECOVERY_READ_LINES
+        );
+
+        let mut distant_mismatch_payload = context_mismatch_payload(100, 1, 300, Some(100));
+        distant_mismatch_payload["match_diagnostic"]["closest_exact_line_matches"] = json!(99);
+        distant_mismatch_payload["match_diagnostic"]["closest_trim_end_line_matches"] = json!(99);
+        distant_mismatch_payload["match_diagnostic"]["closest_trim_line_matches"] = json!(99);
+        distant_mismatch_payload["match_diagnostic"]["first_exact_mismatch_offset"] = json!(90);
+        let distant_mismatch = apply_patch_agent_stdout_result(
+            &distant_mismatch_payload.to_string(),
+            &large_patch,
+            false,
+            false,
+        );
+        let recovery = &distant_mismatch.output["recovery"]["items"][0];
+        assert_eq!(recovery["start_line"], 134);
+        assert_eq!(
+            recovery["limit"],
+            crate::apply_patch_shared::MAX_CODEX_PATCH_RECOVERY_READ_LINES
+        );
+        let mismatch_line = 100 + 90 - 1;
+        let recovery_start = recovery["start_line"].as_u64().unwrap() as usize;
+        let recovery_end = recovery_start + recovery["limit"].as_u64().unwrap() as usize - 1;
+        assert!((recovery_start..=recovery_end).contains(&mismatch_line));
+    }
+
+    #[test]
+    fn apply_patch_context_recovery_does_not_invent_candidate_or_leak_bodies() {
+        let patch = update_patch_with_old_line_count(3);
+        let no_candidate = apply_patch_agent_stdout_result(
+            &context_mismatch_payload(3, 5, 0, None).to_string(),
+            &patch,
+            false,
+            false,
+        );
+        assert!(no_candidate.output.get("match_diagnostic").is_some());
+        assert!(no_candidate.output.get("recovery").is_none());
+
+        let private_patch = crate::apply_patch_shared::parse_codex_patch(
+            "*** Begin Patch\n*** Update File: file.txt\n-PATCH_PRIVATE_TOKEN\n+new\n*** End Patch",
+        )
+        .unwrap();
+        let mut payload = context_mismatch_payload(1, 1, 3, Some(2));
+        payload["future_body_field"] = json!("SOURCE_PRIVATE_TOKEN");
+        payload["recovery"] = json!({
+            "action": "read_file",
+            "reason": "context_mismatch",
+            "path": "SOURCE_PRIVATE_TOKEN",
+            "start_line": 1,
+            "limit": 999999,
+            "change_index": 0,
+            "chunk_index": 0
+        });
+        let result =
+            apply_patch_agent_stdout_result(&payload.to_string(), &private_patch, false, false);
+        let serialized = serde_json::to_string(&result.output).unwrap();
+        assert!(!serialized.contains("SOURCE_PRIVATE_TOKEN"));
+        assert!(!serialized.contains("PATCH_PRIVATE_TOKEN"));
+        assert_eq!(result.output["recovery"]["items"][0]["path"], "file.txt");
+        assert!(
+            result.output["recovery"]["items"][0]["limit"]
+                .as_u64()
+                .unwrap()
+                <= 64
+        );
+    }
+
+    #[test]
+    fn apply_patch_context_recovery_is_suppressed_for_outcome_unknown() {
+        let patch = one_update_patch();
+        let mut payload = context_mismatch_payload(1, 1, 3, Some(2));
+        payload["changed"] = json!(true);
+        payload["recovery"] = json!({"action": "read_file", "path": "other.txt"});
+
+        let result = apply_patch_agent_stdout_result(&payload.to_string(), &patch, false, false);
+        assert!(!result.success);
+        assert_eq!(result.output["execution_state"], "outcome_unknown");
+        assert_eq!(
+            result.output["recovery_action"],
+            "inspect_workspace_before_retry"
+        );
+        assert!(result.output.get("match_diagnostic").is_none());
+        assert!(result.output.get("recovery").is_none());
+        let schema = crate::tool_runtime::registry::output_schema_for_tool("apply_patch");
+        crate::tool_runtime::startup_brief::validate_schema_instance_for_test(
+            &serde_json::to_value(&result).unwrap(),
+            &schema,
+        )
+        .unwrap_or_else(|error| {
+            panic!("apply_patch outcome_unknown must match output schema: {error}")
+        });
+    }
+
+    #[test]
+    fn apply_patch_strict_unique_fuzzy_rejection_gets_validated_bounded_reread() {
+        let patch = one_update_patch();
+        let result = apply_patch_agent_stdout_result(
+            &strict_rejection_payload("trim", 1, 20).to_string(),
+            &patch,
+            false,
+            true,
+        );
+
+        assert!(!result.success);
+        assert_eq!(result.output["execution_state"], "not_started");
+        assert_eq!(result.output["state_changed"], false);
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["classification"],
+            "unique_fuzzy_candidate"
+        );
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["match_mode"],
+            "trim"
+        );
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["match_source"],
+            "old_lines"
+        );
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["matched_start_line"],
+            20
+        );
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["candidate_count"],
+            1
+        );
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["expected_line_count"],
+            1
+        );
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["strict_match"],
+            false
+        );
+        assert_eq!(result.output["recovery"]["action"], "read_files");
+        assert_eq!(
+            result.output["recovery"]["reason"],
+            "strict_match_rejected_unique_fuzzy"
+        );
+        assert_eq!(result.output["recovery"]["items"][0]["path"], "file.txt");
+        assert_eq!(result.output["recovery"]["items"][0]["start_line"], 12);
+        assert_eq!(result.output["recovery"]["items"][0]["limit"], 17);
+        assert_eq!(
+            result.output["recovery_action"],
+            "reread_and_regenerate_strict_patch"
+        );
+        assert!(result.output["retry_guidance"]
+            .as_str()
+            .unwrap()
+            .contains("strict_matching=true"));
+        assert!(!result.output["retry_guidance"]
+            .as_str()
+            .unwrap()
+            .contains("strict_matching=false"));
+        for raw_runner_field in [
+            "chunk_index",
+            "match_mode",
+            "match_source",
+            "matched_start_line",
+            "candidate_count",
+            "strict_match",
+        ] {
+            assert!(result.output.get(raw_runner_field).is_none());
+        }
+
+        let schema = crate::tool_runtime::registry::output_schema_for_tool("apply_patch");
+        crate::tool_runtime::startup_brief::validate_schema_instance_for_test(
+            &serde_json::to_value(&result).unwrap(),
+            &schema,
+        )
+        .unwrap_or_else(|error| panic!("strict recovery must match output schema: {error}"));
+    }
+
+    #[test]
+    fn apply_patch_strict_ambiguous_rejection_never_selects_runner_target() {
+        let patch = one_update_patch();
+        let result = apply_patch_agent_stdout_result(
+            &strict_rejection_payload("exact", 2, 20).to_string(),
+            &patch,
+            false,
+            true,
+        );
+
+        assert!(!result.success);
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["classification"],
+            "ambiguous_candidate"
+        );
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["candidate_count"],
+            2
+        );
+        assert!(result.output["strict_match_diagnostic"]["matched_start_line"].is_null());
+        assert!(result.output.get("recovery").is_none());
+        assert_eq!(result.output["recovery_action"], "add_exact_unique_context");
+        assert!(!result.output["error"].as_str().unwrap().contains("20"));
+        assert!(!result.output["retry_guidance"]
+            .as_str()
+            .unwrap()
+            .contains("strict_matching=false"));
+    }
+
+    #[test]
+    fn apply_patch_strict_ambiguous_context_fact_is_validated_against_chunk_shape() {
+        let patch = crate::apply_patch_shared::parse_codex_patch(
+            "*** Begin Patch\n*** Update File: file.txt\n@@ ctx\n-old\n+new\n*** End Patch",
+        )
+        .unwrap();
+        let mut payload = strict_rejection_payload("exact", 2, 1);
+        payload["match_source"] = json!("change_context");
+        payload["source_line_count"] = json!(4);
+
+        let result = apply_patch_agent_stdout_result(&payload.to_string(), &patch, false, true);
+        assert!(!result.success);
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["classification"],
+            "ambiguous_candidate"
+        );
+        assert_eq!(
+            result.output["strict_match_diagnostic"]["match_source"],
+            "change_context"
+        );
+        assert!(result.output["strict_match_diagnostic"]["matched_start_line"].is_null());
+        assert!(result.output.get("recovery").is_none());
+    }
+
+    #[test]
+    fn apply_patch_strict_recovery_suppresses_spoofed_or_contradictory_metadata() {
+        let patch = one_update_patch();
+        let mut cases = Vec::new();
+
+        let mut wrong_path = strict_rejection_payload("trim", 1, 20);
+        wrong_path["path"] = json!("other.txt");
+        cases.push((wrong_path, true));
+        let mut wrong_change = strict_rejection_payload("trim", 1, 20);
+        wrong_change["change_index"] = json!(1);
+        cases.push((wrong_change, true));
+        let mut wrong_chunk = strict_rejection_payload("trim", 1, 20);
+        wrong_chunk["chunk_index"] = json!(1);
+        cases.push((wrong_chunk, true));
+        let mut wrong_source = strict_rejection_payload("trim", 1, 20);
+        wrong_source["match_source"] = json!("change_context");
+        cases.push((wrong_source, true));
+        cases.push((strict_rejection_payload("exact", 1, 20), true));
+        let mut claimed_strict = strict_rejection_payload("trim", 1, 20);
+        claimed_strict["strict_match"] = json!(true);
+        cases.push((claimed_strict, true));
+        let mut out_of_range_line = strict_rejection_payload("trim", 1, 101);
+        out_of_range_line["source_line_count"] = json!(100);
+        cases.push((out_of_range_line, true));
+        let mut impossible_candidates = strict_rejection_payload("trim", 101, 20);
+        impossible_candidates["source_line_count"] = json!(100);
+        cases.push((impossible_candidates, true));
+        let mut before_search_start = strict_rejection_payload("trim", 1, 20);
+        before_search_start["search_start_line"] = json!(21);
+        cases.push((before_search_start, true));
+        cases.push((strict_rejection_payload("trim", 1, 20), false));
+
+        for (payload, strict_request) in cases {
+            let result = apply_patch_agent_stdout_result(
+                &payload.to_string(),
+                &patch,
+                false,
+                strict_request,
+            );
+            assert!(!result.success);
+            assert!(result.output.get("strict_match_diagnostic").is_none());
+            assert!(result.output.get("recovery").is_none());
+            assert!(result.output.get("path").is_none());
+            assert!(result.output.get("change_index").is_none());
+        }
+    }
+
+    #[test]
+    fn apply_patch_strict_recovery_is_suppressed_for_outcome_unknown() {
+        let patch = one_update_patch();
+        let mut payload = strict_rejection_payload("trim", 1, 20);
+        payload["changed"] = json!(true);
+        payload["state_changed"] = json!(true);
+
+        let result = apply_patch_agent_stdout_result(&payload.to_string(), &patch, false, true);
+        assert!(!result.success);
+        assert_eq!(result.output["execution_state"], "outcome_unknown");
+        assert_eq!(
+            result.output["recovery_action"],
+            "inspect_workspace_before_retry"
+        );
+        assert!(result.output.get("strict_match_diagnostic").is_none());
+        assert!(result.output.get("recovery").is_none());
+    }
+
+    #[test]
+    fn apply_patch_strict_recovery_never_leaks_source_or_patch_bodies() {
+        let patch = crate::apply_patch_shared::parse_codex_patch(
+            "*** Begin Patch\n*** Update File: file.txt\n-PATCH_PRIVATE_TOKEN\n+new\n*** End Patch",
+        )
+        .unwrap();
+        let mut payload = strict_rejection_payload("trim_end", 1, 4);
+        payload["error"] = json!("SOURCE_PRIVATE_TOKEN");
+        payload["future_body_field"] = json!("SOURCE_PRIVATE_TOKEN");
+        payload["recovery"] = json!({
+            "action": "read_files",
+            "items": [{"path": "SOURCE_PRIVATE_TOKEN", "start_line": 1, "limit": 999999}]
+        });
+        payload["strict_match_diagnostic"] = json!({"source": "SOURCE_PRIVATE_TOKEN"});
+        payload["recovery_kind"] = json!("reobserve");
+        payload["recovery_tool"] = json!("list_jobs");
+
+        let result = apply_patch_agent_stdout_result(&payload.to_string(), &patch, false, true);
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(!serialized.contains("SOURCE_PRIVATE_TOKEN"));
+        assert!(!serialized.contains("PATCH_PRIVATE_TOKEN"));
+        assert!(result.output.get("recovery_kind").is_none());
+        assert!(result.output.get("recovery_tool").is_none());
+        assert_eq!(result.output["recovery"]["items"][0]["path"], "file.txt");
     }
 
     #[test]

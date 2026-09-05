@@ -1,5 +1,5 @@
 use crate::projects::ProjectConfig;
-use crate::shell_client::ShellClientRegistry;
+use crate::runner_http::RunnerRegistry;
 use crate::tool_runtime::{RuntimeInfo, ToolRuntime, ToolSpec};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -9,7 +9,7 @@ pub(in crate::tool_runtime::tests) const SAMPLE_PROJECT: &str = "agent:oe:privat
 pub(in crate::tool_runtime::tests) const UNIT_TOOL_FIXTURES: &[&str] = &[
     "list_tools",
     "list_projects",
-    "list_agents",
+    "list_runners",
     "runtime_status",
 ];
 
@@ -140,6 +140,7 @@ pub(in crate::tool_runtime::tests) fn sample_field_value(field: &str) -> Value {
         "id" => json!("private-drop"),
         "base_commit" => json!("a".repeat(40)),
         "head_commit" => json!("b".repeat(40)),
+        "expected_head" => json!("a".repeat(40)),
         "expected_revision" => json!(format!("sha256:{}", "a".repeat(64))),
         "name" => json!("Private Drop"),
         "kind" => json!("note"),
@@ -151,18 +152,6 @@ pub(in crate::tool_runtime::tests) fn sample_field_value(field: &str) -> Value {
         "execution_context" => json!({}),
         other => panic!("missing sample value for required field {other}"),
     }
-}
-
-pub(in crate::tool_runtime::tests) fn sample_tool_args_with_session(name: &str) -> Value {
-    let mut args = sample_tool_args(name);
-    let obj = args
-        .as_object_mut()
-        .unwrap_or_else(|| panic!("{name} does not accept object arguments"));
-    obj.insert(
-        "session_id".to_string(),
-        Value::String("wc_sess_accessor".to_string()),
-    );
-    args
 }
 
 /// Helper: fetch a ToolSpec by name from the runtime.
@@ -302,11 +291,11 @@ pub(in crate::tool_runtime::tests) fn runtime_with_project(
 ) -> ToolRuntime {
     let _ = (root, project_id);
     ToolRuntime::new(
-        Arc::new(ShellClientRegistry::default()),
+        Arc::new(RunnerRegistry::default()),
         Arc::new(RuntimeInfo::default()),
     )
 }
 
 pub(in crate::tool_runtime::tests) fn runtime_with_info(info: RuntimeInfo) -> ToolRuntime {
-    ToolRuntime::new(Arc::new(ShellClientRegistry::default()), Arc::new(info))
+    ToolRuntime::new(Arc::new(RunnerRegistry::default()), Arc::new(info))
 }

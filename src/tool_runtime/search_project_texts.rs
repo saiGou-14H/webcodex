@@ -126,7 +126,7 @@ fn projected_batch_len(base_len: usize, item_bytes: usize, item_count: usize) ->
         .saturating_add(item_count.saturating_sub(1))
 }
 
-fn retryable_agent_request_failure(result: &ToolResult) -> bool {
+fn retryable_runner_request_failure(result: &ToolResult) -> bool {
     !result.success
         && result.output.get("code").and_then(Value::as_str) == Some("search_request_dropped")
 }
@@ -568,7 +568,7 @@ impl ToolRuntime {
                                         Some(deadline),
                                     )
                                     .await;
-                                if retryable_agent_request_failure(&first)
+                                if retryable_runner_request_failure(&first)
                                     && Instant::now() < deadline
                                 {
                                     self.search_one_resolved_project_text(
@@ -615,7 +615,12 @@ mod tests {
                     "line": match_index + 1,
                     "preview": format!("m{match_index:03}-{}", "界".repeat(preview_bytes / 3)),
                     "context_before": [],
-                    "context_after": []
+                    "context_after": [],
+                    "read_hint": {
+                        "path": format!("src/{index}-{match_index:03}.rs"),
+                        "start_line": 1,
+                        "limit": 80
+                    }
                 })
             })
             .collect::<Vec<_>>();
@@ -712,7 +717,12 @@ mod tests {
                         "line": 1,
                         "preview": text,
                         "context_before": [],
-                        "context_after": []
+                        "context_after": [],
+                        "read_hint": {
+                            "path": format!("src/{index}.rs"),
+                            "start_line": 1,
+                            "limit": 80
+                        }
                     }],
                     "truncated": false,
                     "truncation_reason": null

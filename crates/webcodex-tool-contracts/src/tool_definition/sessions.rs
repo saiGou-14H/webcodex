@@ -1,4 +1,4 @@
-use super::AgentCapability::{GitOrShell, OwnerOnly};
+use super::RunnerCapabilityRequirement::{GitOrShell, OwnerOnly};
 use super::ToolVisibility::{ModelHidden, ModelVisible};
 use super::{
     adaptive_runtime_direct, context_recovery_only, def, model_spec, permission_risk,
@@ -130,7 +130,7 @@ pub(super) const DEFINITIONS: &[ToolDefinition] = &[
             true,
             false,
             ),
-            "Update Session defaults. Requires an authorized project matching the exact Session project; cross-project escape is not supported. Context and event commit under the store lock; the background writer persists, so success does not mean disk flush. Never falls back and never creates unknown Sessions.",
+            "Update Session defaults. Binding execution_context.resource selects an already configured Runner-local named SSH resource; open_session_shell then opens the persistent remote shell through it. Requires an authorized project matching the exact Session project; cross-project escape is not supported. Context and event commit under the store lock; the background writer persists, so success does not mean disk flush. Never falls back and never creates unknown Sessions.",
             update_session_context_input_schema,
         ),
         PERMISSION_RISK_WRITE,
@@ -179,7 +179,7 @@ pub(super) const DEFINITIONS: &[ToolDefinition] = &[
             false,
             false,
         ),
-        "Read bounded structured validation evidence already recorded in an explicit project-scoped session ledger. Does not run Cargo or shell commands, enqueue an agent request, read project files, mutate the workspace, or replace finish_coding_task.",
+        "Read bounded structured validation evidence already recorded in an explicit project-scoped session ledger. Does not run Cargo or shell commands, enqueue a Runner request, read project files, mutate the workspace, or replace finish_coding_task.",
         validation_summary_input_schema,
     )),
     requires_explicit_business_session(model_spec(
@@ -320,9 +320,10 @@ pub(super) const DEFINITIONS: &[ToolDefinition] = &[
         ),
         PERMISSION_RISK_WRITE,
     )),
-    requires_explicit_business_session(model_spec(
-        def(
-            "session_discussion_summary",
+    adaptive_runtime_direct(
+        requires_explicit_business_session(model_spec(
+            def(
+                "session_discussion_summary",
             ModelVisible,
             TOOL_CATEGORY_SESSION,
             None,
@@ -340,8 +341,10 @@ pub(super) const DEFINITIONS: &[ToolDefinition] = &[
             false,
         ),
         "Return a bounded structured aggregate of session-local discussion from the recorded session ledger. Does not call an LLM or generate natural-language summaries.",
-        session_discussion_summary_input_schema,
-    )),
+            session_discussion_summary_input_schema,
+        )),
+        15,
+    ),
     requires_explicit_business_session(model_spec(
         def(
             "session_handoff_summary",

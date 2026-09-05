@@ -12,11 +12,10 @@ use super::{
     HotRunnerConfig, PersistentShellManager, ReloadableRunnerConfig, RunnerSink,
     ShellCommandResult, SubmitResultError,
 };
-use crate::shell_protocol::{
-    validate_process_argv, validate_raw_shell_wire_command, validate_script_request,
-    ShellAgentShellRequest, ShellProcessArgv, ShellScriptPayload, EXTERNAL_SEARCH_REQUEST_PREFIX,
-    PROCESS_CWD_MAX_BYTES, PROCESS_STDIN_MAX_BYTES,
-    STRUCTURED_EXECUTION_DIRECT_SYNC_TIMEOUT_MAX_SECS,
+use crate::runner_protocol::{
+    validate_process_argv, validate_raw_shell_wire_command, validate_script_request, RunnerRequest,
+    ShellProcessArgv, ShellScriptPayload, EXTERNAL_SEARCH_REQUEST_PREFIX, PROCESS_CWD_MAX_BYTES,
+    PROCESS_STDIN_MAX_BYTES, STRUCTURED_EXECUTION_DIRECT_SYNC_TIMEOUT_MAX_SECS,
 };
 use crate::{handle_file_request, is_file_request_kind, JobManager, PendingJobStart};
 use std::path::Path;
@@ -46,7 +45,7 @@ fn run_native_shell_or_internal_search(
     runtime: &ReloadableRunnerConfig,
     jobs: &JobManager,
     project_registry_dir: &Path,
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
 ) -> ShellCommandResult {
     if request.command.lines().next() == Some(EXTERNAL_SEARCH_REQUEST_PREFIX) {
         let Some(script) = internal_search_script(&request.command) else {
@@ -99,7 +98,7 @@ pub(crate) fn dispatch_request(
     persistent_shells: &PersistentShellManager,
     project_registry_dir: &Path,
     lsp: &LspSupervisor,
-    request: ShellAgentShellRequest,
+    request: RunnerRequest,
 ) -> Result<bool, SubmitResultError> {
     if runner_tool_trace_enabled() {
         tracing::info!(
@@ -108,7 +107,7 @@ pub(crate) fn dispatch_request(
             runner_client_id = %request.client_id,
             runner_request_kind = %request.kind,
             runner_job_id = request.job_id.as_deref().unwrap_or("-"),
-            runner_agent_instance_id = sink.agent_instance_id(),
+            runner_agent_instance_id = sink.runner_instance_id(),
             "runner_tool_dispatch_started"
         );
     }
@@ -175,6 +174,35 @@ pub(crate) fn dispatch_request(
             duration_ms: Some(0),
             error: Some(
                 "invalid_request: bridge payload is valid only for mcp_gateway requests; command was not started"
+                    .to_string(),
+            ),
+        };
+        return sink
+            .submit_result_with_metadata(request.request_id, result, config, runtime)
+            .map(|_| true);
+    }
+    if request.kind == "plugin_gateway" {
+        let request_id = request.request_id.clone();
+        let response = match request.plugin_gateway {
+            Some(operation) => runtime.plugins().handle(operation),
+            None => webcodex_core::plugin::PluginGatewayResponse::error(
+                webcodex_core::plugin::PluginDispatchState::NotStarted,
+                "invalid_plugin_request",
+                "Typed native Plugin operation is required; request was not started",
+            ),
+        };
+        return sink
+            .submit_plugin_gateway_result(request_id, response)
+            .map(|_| true);
+    }
+    if request.plugin_gateway.is_some() {
+        let result = CommandResult {
+            exit_code: None,
+            stdout: None,
+            stderr: None,
+            duration_ms: Some(0),
+            error: Some(
+                "invalid_request: plugin_gateway payload is valid only for plugin_gateway requests; command was not started"
                     .to_string(),
             ),
         };
@@ -609,9 +637,7 @@ pub(crate) fn dispatch_request(
     }
 }
 
-fn validate_run_process_request(
-    request: &ShellAgentShellRequest,
-) -> Result<&ShellProcessArgv, String> {
+fn validate_run_process_request(request: &RunnerRequest) -> Result<&ShellProcessArgv, String> {
     if request.job_id.is_some() {
         return Err("job_id is not supported by synchronous run_process".to_string());
     }
@@ -656,9 +682,7 @@ fn validate_run_process_request(
     Ok(process)
 }
 
-fn validate_run_script_request(
-    request: &ShellAgentShellRequest,
-) -> Result<&ShellScriptPayload, String> {
+fn validate_run_script_request(request: &RunnerRequest) -> Result<&ShellScriptPayload, String> {
     if request.job_id.is_some() {
         return Err("job_id is not supported by synchronous run_script".to_string());
     }
@@ -686,14 +710,12 @@ fn validate_run_script_request(
     Ok(script)
 }
 
-fn validate_internal_posix_script_request(
-    request: &ShellAgentShellRequest,
-) -> Result<&str, String> {
+fn validate_internal_posix_script_request(request: &RunnerRequest) -> Result<&str, String> {
     let script = validate_run_script_request(request)?;
     if request.stdin.is_some() {
         return Err("stdin must be absent for an internal POSIX script".to_string());
     }
-    if script.language != crate::shell_protocol::ShellScriptLanguage::Sh {
+    if script.language != crate::runner_protocol::ShellScriptLanguage::Sh {
         return Err("internal POSIX script language must be sh".to_string());
     }
     if !script.args.is_empty() {
@@ -702,7 +724,7 @@ fn validate_internal_posix_script_request(
     Ok(&script.script)
 }
 
-fn lifecycle_project_id(request: &ShellAgentShellRequest) -> Option<String> {
+fn lifecycle_project_id(request: &RunnerRequest) -> Option<String> {
     request
         .stdin
         .as_deref()

@@ -2,13 +2,14 @@ use serde_json::{json, Value};
 
 use super::helpers::{
     command_rejected_message, explicit_shell_dispatch_command, is_safe_job_id,
-    project_relative_agent_cwd, resolve_agent_cwd, validate_raw_shell_command_length,
+    project_relative_runner_cwd, resolve_runner_cwd, validate_raw_shell_command_length,
 };
 use super::tool_result::{RecoveryKind, RecoveryTool, ToolResult};
 use super::{ExecutionPurpose, ExecutionShell, ToolRuntime};
 use crate::auth::AuthContext;
-use crate::shell_client::{command_preview, ShellJobStartMetadata, COMMAND_PREVIEW_MAX_CHARS};
-use crate::shell_protocol::{
+use crate::runner_http::{command_preview, ShellJobStartMetadata, COMMAND_PREVIEW_MAX_CHARS};
+use crate::runner_protocol::{
+    ShellJobActivity, ShellJobActivityPhase, ShellJobActivitySource, ShellJobActivityState,
     ShellJobInfo, ShellJobOpRequest, ShellJobStructuredExecutionMetadata, ShellJobValidationStep,
 };
 
@@ -30,18 +31,6 @@ pub(crate) fn is_terminal_job_status(status: &str) -> bool {
     )
 }
 
-/// Statuses counted as broadly active by runtime observability and bounded
-/// summaries. `stop_requested` remains active for compatibility, but lifecycle
-/// summaries classify it as nonblocking terminal-pending state.
-pub(crate) const ACTIVE_JOB_STATUSES: &[&str] = &[
-    "running",
-    "queued",
-    "started",
-    "agent_queued",
-    "stop_requested",
-    "recovering",
-];
-
 pub(crate) fn detected_job_summary(
     command_summary: Option<&str>,
     purpose: Option<&str>,
@@ -49,6 +38,68 @@ pub(crate) fn detected_job_summary(
     exit_code: Option<i64>,
     stdout: &str,
     stderr: &str,
+) -> Value {
+    detected_job_summary_with_activity(
+        command_summary,
+        purpose,
+        status,
+        exit_code,
+        stdout,
+        stderr,
+        None,
+    )
+}
+
+fn activity_progress_projection(activity: &ShellJobActivity) -> Value {
+    let state = match activity.state {
+        ShellJobActivityState::Working => "working",
+        ShellJobActivityState::Waiting => "waiting",
+    };
+    let (reason_code, summary) = match activity.phase {
+        ShellJobActivityPhase::ProcessRunning => {
+            ("process_running", "Process execution in progress")
+        }
+        ShellJobActivityPhase::ValidationFormat => (
+            "validation_format",
+            "Structured format validation in progress",
+        ),
+        ShellJobActivityPhase::ValidationCheck => (
+            "validation_check",
+            "Structured check validation in progress",
+        ),
+        ShellJobActivityPhase::ValidationTest => {
+            ("validation_test", "Structured test validation in progress")
+        }
+        ShellJobActivityPhase::CargoWaitingForBuildLock => (
+            "cargo_waiting_for_build_lock",
+            "Waiting for Cargo build lock",
+        ),
+        ShellJobActivityPhase::CargoCompiling => {
+            ("cargo_compiling", "Cargo compilation in progress")
+        }
+        ShellJobActivityPhase::CargoChecking => ("cargo_checking", "Cargo checking in progress"),
+    };
+    let source = match activity.source {
+        ShellJobActivitySource::RunnerExecution => "runner_execution",
+        ShellJobActivitySource::ValidationPlan => "validation_plan",
+        ShellJobActivitySource::CargoOutput => "cargo_output",
+    };
+    json!({
+        "state": state,
+        "reason_code": reason_code,
+        "summary": summary,
+        "source": source,
+    })
+}
+
+pub(crate) fn detected_job_summary_with_activity(
+    command_summary: Option<&str>,
+    purpose: Option<&str>,
+    status: &str,
+    exit_code: Option<i64>,
+    stdout: &str,
+    stderr: &str,
+    activity: Option<&ShellJobActivity>,
 ) -> Value {
     let normalized = command_summary
         .unwrap_or_default()
@@ -84,6 +135,46 @@ pub(crate) fn detected_job_summary(
         "kind": kind,
         "outcome": outcome,
     });
+    if outcome == "in_progress" {
+        let lower = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+        let cargo_command = normalized == "cargo" || normalized.starts_with("cargo ");
+        let progress = if let Some(activity) = activity {
+            Some(activity_progress_projection(activity))
+        } else if cargo_command && lower.contains("blocking waiting for file lock") {
+            Some(json!({
+                "state": "waiting",
+                "reason_code": "cargo_build_lock",
+                "summary": "Waiting for Cargo build lock",
+            }))
+        } else if cargo_command
+            && matches!(kind, "test" | "check" | "build" | "format")
+            && lower
+                .lines()
+                .any(|line| line.trim_start().starts_with("compiling "))
+        {
+            Some(json!({
+                "state": "working",
+                "reason_code": "cargo_compiling",
+                "summary": "Cargo compilation in progress",
+            }))
+        } else if cargo_command
+            && matches!(kind, "test" | "check" | "build" | "format")
+            && lower
+                .lines()
+                .any(|line| line.trim_start().starts_with("checking "))
+        {
+            Some(json!({
+                "state": "working",
+                "reason_code": "cargo_checking",
+                "summary": "Cargo checking in progress",
+            }))
+        } else {
+            None
+        };
+        if let Some(progress) = progress {
+            detected["progress"] = progress;
+        }
+    }
     if kind == "test" {
         let combined = format!("{stdout}\n{stderr}");
         let metadata = super::cargo::parse_cargo_test_run_metadata(&combined);
@@ -96,6 +187,72 @@ pub(crate) fn detected_job_summary(
     detected
 }
 
+#[cfg(test)]
+mod detected_summary_tests {
+    use super::{detected_job_summary, detected_job_summary_with_activity};
+    use crate::runner_protocol::{
+        ShellJobActivity, ShellJobActivityPhase, ShellJobActivitySource, ShellJobActivityState,
+    };
+
+    #[test]
+    fn cargo_progress_is_advisory_and_command_scoped() {
+        let locked = detected_job_summary(
+            Some("cargo check -p webcodex"),
+            Some("validation"),
+            "running",
+            None,
+            "",
+            "Blocking waiting for file lock on build directory\n",
+        );
+        assert_eq!(locked["progress"]["state"], "waiting");
+        assert_eq!(locked["progress"]["reason_code"], "cargo_build_lock");
+
+        let compiling = detected_job_summary(
+            Some("cargo test -p webcodex"),
+            Some("test"),
+            "running",
+            None,
+            "",
+            "   Compiling webcodex v0.3.9\n",
+        );
+        assert_eq!(compiling["progress"]["reason_code"], "cargo_compiling");
+
+        let unrelated = detected_job_summary(
+            Some("custom-tool"),
+            Some("operation"),
+            "running",
+            None,
+            "Blocking waiting for file lock on build directory\n",
+            "",
+        );
+        assert!(unrelated.get("progress").is_none());
+    }
+
+    #[test]
+    fn structured_activity_takes_precedence_over_conflicting_log_heuristics() {
+        let activity = ShellJobActivity {
+            state: ShellJobActivityState::Waiting,
+            phase: ShellJobActivityPhase::CargoWaitingForBuildLock,
+            source: ShellJobActivitySource::CargoOutput,
+        };
+        let detected = detected_job_summary_with_activity(
+            Some("cargo check -p webcodex"),
+            Some("validation"),
+            "running",
+            None,
+            "",
+            "Checking webcodex v0.3.9\n",
+            Some(&activity),
+        );
+        assert_eq!(detected["progress"]["state"], "waiting");
+        assert_eq!(
+            detected["progress"]["reason_code"],
+            "cargo_waiting_for_build_lock"
+        );
+        assert_eq!(detected["progress"]["source"], "cargo_output");
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct StructuredValidationEvidence {
     pub(crate) diagnostics: Option<super::validation_parser::ValidationDiagnostics>,
@@ -104,6 +261,7 @@ pub(crate) struct StructuredValidationEvidence {
     pub(crate) tests_passed: Option<u64>,
     pub(crate) tests_failed: Option<u64>,
     pub(crate) zero_tests_run: Option<bool>,
+    pub(crate) test_count_evidence_reason: Option<&'static str>,
     pub(crate) warnings_count: Option<u64>,
     pub(crate) errors_count: Option<u64>,
 }
@@ -127,6 +285,7 @@ pub(crate) fn structured_validation_evidence(
         tests_passed: None,
         tests_failed: None,
         zero_tests_run: None,
+        test_count_evidence_reason: None,
         warnings_count: None,
         errors_count: None,
     };
@@ -153,6 +312,11 @@ pub(crate) fn structured_validation_evidence(
         "test" => {
             let metadata = super::cargo::parse_cargo_test_run_metadata(&combined);
             evidence.tests_detected = Some(metadata.tests_detected);
+            evidence.test_count_evidence_reason = Some(if truncated {
+                "output_truncated"
+            } else {
+                metadata.count_evidence_reason
+            });
             if !truncated {
                 evidence.tests_run_count = metadata.tests_run_count;
                 evidence.tests_passed = metadata.tests_passed;
@@ -268,6 +432,9 @@ pub(crate) fn validation_job_projection(
                         "actual_tests_run": evidence.tests_run_count,
                         "status": status,
                         "reason_code": reason_code,
+                        "evidence_reason_code": evidence
+                            .test_count_evidence_reason
+                            .unwrap_or("no_complete_summary"),
                     });
                 }
             }
@@ -409,6 +576,7 @@ pub(crate) fn agent_job_summary_value(job: &ShellJobInfo) -> Value {
         "exit_code": job.exit_code,
         "command_execution_state": job.command_execution_state,
         "structured_execution": model_facing_structured_execution_metadata(job.structured_execution.as_ref()),
+        "activity": job.activity,
         "recovery_state": job.recovery_state,
         "recovered_after_server_restart": job.recovered_after_server_restart,
         "reconciled_at": job.reconciled_at,
@@ -801,7 +969,7 @@ impl ToolRuntime {
             let display = remote_cwd.clone().unwrap_or_else(|| ".".to_string());
             (remote_cwd, display)
         } else {
-            let cwd = match resolve_agent_cwd(&proj, cwd.as_deref()) {
+            let cwd = match resolve_runner_cwd(&proj, cwd.as_deref()) {
                     Ok(cwd) => cwd,
                     Err(error) => {
                         return ToolResult::err(command_rejected_message(
@@ -811,7 +979,7 @@ impl ToolRuntime {
                     }
                 };
             let display =
-                project_relative_agent_cwd(&proj, &cwd).unwrap_or_else(|_| ".".to_string());
+                project_relative_runner_cwd(&proj, &cwd).unwrap_or_else(|_| ".".to_string());
             (Some(cwd), display)
         };
         let actual_shell = shell.map(ExecutionShell::as_str).unwrap_or(if remote {
@@ -832,8 +1000,8 @@ impl ToolRuntime {
             None => command.clone(),
         };
         match self
-                .shell_clients
-                .start_job_with_metadata_for_auth(
+                .runner_registry
+                .start_job_with_metadata_for_access(
                     ShellJobOpRequest {
                         op: "start".to_string(),
                         client_id: Some(client_id),
@@ -857,7 +1025,7 @@ impl ToolRuntime {
                         shell: Some(actual_shell.to_string()),
                         validation_steps,
                         validation: None,
-                        visibility: crate::shell_client::ShellJobVisibility::Public,
+                        visibility: crate::runner_http::ShellJobVisibility::Public,
                         validation_identity: None,
                         validation_tool: None,
                         assertion_name: None,
@@ -865,7 +1033,8 @@ impl ToolRuntime {
                         stdin: None,
                         detached_idempotency_key: None,
                     },
-                    auth,
+                    crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                    None,
                 )
                 .await
             {
@@ -910,7 +1079,14 @@ impl ToolRuntime {
         include_command_preview: bool,
         auth: Option<&AuthContext>,
     ) -> ToolResult {
-        match self.shell_clients.get_job_for_auth(auth, &job_id).await {
+        match self
+            .runner_registry
+            .get_job_for_auth(
+                crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                &job_id,
+            )
+            .await
+        {
             Ok(job) => {
                 let mut output = json!({
                     "job_id": job.job_id,
@@ -927,6 +1103,7 @@ impl ToolRuntime {
                     "error": job.error,
                     "command_execution_state": job.command_execution_state,
                     "structured_execution": model_facing_structured_execution_metadata(job.structured_execution.as_ref()),
+                    "activity": job.activity,
                     "recovery_state": job.recovery_state,
                     "recovered_after_server_restart": job.recovered_after_server_restart,
                     "reconciled_at": job.reconciled_at,
@@ -954,8 +1131,16 @@ impl ToolRuntime {
                 let kind = validation_metadata.map(|metadata| metadata.kind.as_str());
                 if tool.is_some() {
                     let logs = self
-                        .shell_clients
-                        .job_log_for_auth(auth, &job_id, None, None, Some(500), None, None)
+                        .runner_registry
+                        .job_log_for_auth(
+                            crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                            &job_id,
+                            None,
+                            None,
+                            Some(500),
+                            None,
+                            None,
+                        )
                         .await;
                     let (stdout, stderr, truncated) = match logs {
                         Ok((logged_job, stdout, stderr, next_stdout_line, next_stderr_line, _)) => {
@@ -1044,9 +1229,9 @@ impl ToolRuntime {
             tail_lines
         };
         match self
-            .shell_clients
+            .runner_registry
             .job_log_for_auth(
-                auth,
+                crate::runner_http::runner_access_from_auth(auth).as_ref(),
                 &job_id,
                 offset,
                 None,
@@ -1061,13 +1246,14 @@ impl ToolRuntime {
                 let stderr = stderr.unwrap_or_default();
                 let command_summary = job.command_preview.clone();
                 let purpose = job.purpose.clone().unwrap_or_else(|| "other".to_string());
-                let detected_summary = detected_job_summary(
+                let detected_summary = detected_job_summary_with_activity(
                     Some(&command_summary),
                     Some(&purpose),
                     &job.status,
                     job.exit_code.map(i64::from),
                     &wait.analysis_stdout,
                     &wait.analysis_stderr,
+                    job.activity.as_ref(),
                 );
                 let validation_tool = job
                     .validation
@@ -1103,6 +1289,7 @@ impl ToolRuntime {
                     "exit_code": job.exit_code,
                     "command_execution_state": job.command_execution_state,
                     "structured_execution": model_facing_structured_execution_metadata(job.structured_execution.as_ref()),
+                    "activity": job.activity,
                     "stdout_tail": stdout,
                     "stderr_tail": stderr,
                     "stdout_lines": next_stdout_line.saturating_sub(1),
@@ -1211,7 +1398,10 @@ impl ToolRuntime {
         // filters only reduce that already-visible set, and limit is applied
         // after every filter so exact project/session targets cannot be hidden
         // behind unrelated recent Jobs.
-        let agent_jobs = self.shell_clients.list_all_jobs_for_auth(auth).await;
+        let agent_jobs = self
+            .runner_registry
+            .list_all_jobs_for_auth(crate::runner_http::runner_access_from_auth(auth).as_ref())
+            .await;
         let mut summaries: Vec<Value> = agent_jobs
             .iter()
             .filter(|job| {
@@ -1268,7 +1458,12 @@ impl ToolRuntime {
         if requested.is_empty() {
             return grouped;
         }
-        for job in self.shell_clients.list_all_jobs_for_auth(auth).await.iter() {
+        for job in self
+            .runner_registry
+            .list_all_jobs_for_auth(crate::runner_http::runner_access_from_auth(auth).as_ref())
+            .await
+            .iter()
+        {
             let Some(session_id) = job.session_id.as_deref() else {
                 continue;
             };
@@ -1361,7 +1556,14 @@ impl ToolRuntime {
             Err(err) => return err.into_tool_result(),
         };
         let request_project = resolved.resolved_id;
-        let job = match self.shell_clients.get_job_for_auth(auth, &job_id).await {
+        let job = match self
+            .runner_registry
+            .get_job_for_auth(
+                crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                &job_id,
+            )
+            .await
+        {
             Ok(job) => job,
             Err(_) => return job_not_found_result(&request_project, &job_id),
         };
@@ -1406,7 +1608,7 @@ impl ToolRuntime {
                 warnings,
             ));
         }
-        if !ACTIVE_JOB_STATUSES.contains(&status_before.as_str()) {
+        if !webcodex_runner_registry::job_status_is_active(&status_before) {
             return ToolResult::ok(stop_job_output(
                 &request_project,
                 &job_id,
@@ -1419,15 +1621,22 @@ impl ToolRuntime {
             ));
         }
         let stopped = match self
-            .shell_clients
-            .stop_job_for_auth(auth, &job_id, "tool_runtime".to_string())
+            .runner_registry
+            .stop_job_for_auth(
+                crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                &job_id,
+                "tool_runtime".to_string(),
+            )
             .await
         {
             Ok(job) => job,
             Err(error) if error.contains("runner_unavailable_recovering") => {
                 let recovering = self
-                    .shell_clients
-                    .get_job_for_auth(auth, &job_id)
+                    .runner_registry
+                    .get_job_for_auth(
+                        crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                        &job_id,
+                    )
                     .await
                     .unwrap_or(job);
                 return job_recovering_stop_result(&request_project, &recovering);
@@ -1456,8 +1665,15 @@ impl ToolRuntime {
     ) -> Value {
         let max = limit.clamp(1, 20);
         let mut active = Vec::new();
-        for job in self.shell_clients.list_jobs_for_auth(auth, Some(100)).await {
-            if !ACTIVE_JOB_STATUSES.contains(&job.status.as_str()) {
+        for job in self
+            .runner_registry
+            .list_jobs_for_auth(
+                crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                Some(100),
+            )
+            .await
+        {
+            if !webcodex_runner_registry::job_status_is_active(&job.status) {
                 continue;
             }
             if let Some(project) = project {
@@ -1555,7 +1771,7 @@ impl ToolRuntime {
             return ToolResult::err("invalid job id");
         }
         match self
-            .shell_clients
+            .runner_registry
             .stop_job(&job_id, "runtime_http".to_string())
             .await
         {
@@ -1579,7 +1795,7 @@ mod recovery_projection_tests {
         job_recovering_stop_result, job_stop_forbidden_result, recovery_reason_text,
         validation_job_projection,
     };
-    use crate::shell_protocol::ShellJobInfo;
+    use crate::runner_protocol::ShellJobInfo;
     use serde_json::json;
 
     #[test]
@@ -1781,6 +1997,10 @@ mod recovery_projection_tests {
             ignored_only_required["test_count_assertion"]["reason_code"],
             "minimum_not_met"
         );
+        assert_eq!(
+            ignored_only_required["test_count_assertion"]["evidence_reason_code"],
+            "complete_summary"
+        );
 
         let one_passed_with_ignored = project(
             "running 6 tests\n\ntest result: ok. 1 passed; 0 failed; 5 ignored\n",
@@ -1833,6 +2053,10 @@ mod recovery_projection_tests {
             assert_eq!(value["test_count_assertion"]["actual_tests_run"], actual);
             assert_eq!(value["test_count_assertion"]["status"], status);
             assert_eq!(
+                value["test_count_assertion"]["evidence_reason_code"],
+                "complete_summary"
+            );
+            assert_eq!(
                 value["test_count_assertion"]["reason_code"],
                 if passed {
                     "minimum_satisfied"
@@ -1857,6 +2081,24 @@ mod recovery_projection_tests {
             );
             assert!(unproven["test_count_assertion"]["actual_tests_run"].is_null());
         }
+
+        assert_eq!(
+            project("", false, Some(1))["test_count_assertion"]["evidence_reason_code"],
+            "no_complete_summary"
+        );
+        assert_eq!(
+            project("test result: ok. 10 passed;\n", false, Some(6))["test_count_assertion"]
+                ["evidence_reason_code"],
+            "partial_harness_summary"
+        );
+        assert_eq!(
+            project(
+                "test result: ok. 10 passed; 0 failed; 0 ignored\n",
+                true,
+                Some(6)
+            )["test_count_assertion"]["evidence_reason_code"],
+            "output_truncated"
+        );
 
         let command_failure = validation_job_projection(
             Some("cargo_test"),
@@ -1970,7 +2212,7 @@ mod recovery_projection_tests {
 
     #[test]
     fn agent_job_summary_hides_internal_validation_correlation_metadata() {
-        use crate::shell_protocol::{ShellJobInfo, ShellJobStructuredExecutionMetadata};
+        use crate::runner_protocol::{ShellJobInfo, ShellJobStructuredExecutionMetadata};
         let job = ShellJobInfo {
             job_id: "job-validation-summary".to_string(),
             request_id: Some("req-validation-summary".to_string()),
@@ -2006,6 +2248,7 @@ mod recovery_projection_tests {
             codex: None,
             result: None,
             validation_progress: None,
+            activity: None,
             validation: None,
             recovery_state: None,
             recovered_after_server_restart: false,
@@ -2029,7 +2272,7 @@ mod recovery_projection_tests {
 
     #[test]
     fn agent_job_summary_includes_recovery_reason() {
-        use crate::shell_protocol::ShellJobInfo;
+        use crate::runner_protocol::ShellJobInfo;
         let job = ShellJobInfo {
             job_id: "job-1".to_string(),
             request_id: Some("req-1".to_string()),
@@ -2056,6 +2299,7 @@ mod recovery_projection_tests {
             codex: None,
             result: None,
             validation_progress: None,
+            activity: None,
             validation: None,
             recovery_state: Some("lost_after_reconcile".to_string()),
             recovered_after_server_restart: true,

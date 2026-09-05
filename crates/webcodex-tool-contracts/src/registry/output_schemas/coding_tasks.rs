@@ -417,6 +417,8 @@ fn startup_workflow_schema() -> Value {
                     "session_message_ack": {"type": "string", "maxLength": 720},
                     "session_message_resolution": {"type": "string", "maxLength": 480},
                     "context_sidecar": {"type": "string", "maxLength": 320},
+                    "runner_targeting": {"type": "string", "maxLength": 320},
+                    "persistent_shell": {"type": "string", "maxLength": 320},
                     "normal_closeout": {"type": "string", "maxLength": 480}
                 },
                 "required": [
@@ -425,6 +427,8 @@ fn startup_workflow_schema() -> Value {
                     "session_message_ack",
                     "session_message_resolution",
                     "context_sidecar",
+                    "runner_targeting",
+                    "persistent_shell",
                     "normal_closeout"
                 ],
                 "additionalProperties": false
@@ -767,7 +771,7 @@ fn startup_semantic_navigation_schema() -> Value {
                     "probe_failed"
                 ]
             },
-            "available": {"type": "boolean"},
+            "available": nullable_schema("boolean", "Observed semantic-navigation availability. Null means the bounded startup status probe timed out, so availability is intentionally unknown rather than unavailable."),
             "provider": nullable_schema("string", "Semantic provider when applicable."),
             "capability": nullable_schema("string", "Bounded advertised capability summary."),
             "reason_code": nullable_schema("string", "Stable semantic-navigation reason.")
@@ -908,8 +912,8 @@ fn semantic_navigation_schema() -> Value {
         "description": "Always-present bounded Rust/Go semantic-navigation capability summary. Derived only from a typed agent status probe; never contains transport envelopes, process output, paths, environment variables, or symbol/location data.",
         "additionalProperties": false,
         "properties": {
-            "supported": schema_type("boolean", "True when the project is agent-backed, the owning agent is connected, and it advertises lsp_read_only_navigation."),
-            "available": schema_type("boolean", "True when supported Rust/Go navigation has an available executable or an existing running/initializing server slot. A crashed slot stays available only while the agent still reports the executable as available."),
+            "supported": schema_type("boolean", "True when the Project is Runner-backed, the owning Runner is connected, and it advertises lsp_read_only_navigation."),
+            "available": nullable_schema("boolean", "Observed semantic-navigation availability. True means supported Rust/Go navigation has an available executable or an existing running/initializing server slot; false is a positive unavailable observation; null means the bounded startup status probe timed out before availability could be observed."),
             "recommended": schema_type("boolean", "True only for available or running status."),
             "status": {
                 "type": "string",
@@ -1073,7 +1077,7 @@ fn work_on_project_output_schema() -> Value {
         "type": "object",
         "properties": {
             "supported": {"type": "boolean"},
-            "available": {"type": "boolean"},
+            "available": nullable_schema("boolean", "Observed semantic-navigation availability. Null means the bounded startup status probe timed out, so availability is unknown rather than unavailable."),
             "status": {
                 "type": "string",
                 "enum": [

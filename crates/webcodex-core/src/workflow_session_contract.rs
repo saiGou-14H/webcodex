@@ -2,10 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
+pub const SESSION_ID_PREFIX: &str = "wc_sess_";
 pub const TOOL_CALL_CONTEXT_REQUEST_INTERNAL_FIELD: &str = "__webcodex_stateless_context_request";
 
 pub const MAX_MODEL_VALIDATION_ASSERTION_NAME_CHARS: usize =
-    crate::shell_protocol::VALIDATION_ASSERTION_NAME_MAX_CHARS;
+    crate::runner_protocol::VALIDATION_ASSERTION_NAME_MAX_CHARS;
 pub const TOOL_CALL_RECORDING_SESSION_ID_FIELD: &str = "recording_session_id";
 pub const TOOL_CALL_ACK_SESSION_MESSAGE_IDS_FIELD: &str = "ack_session_message_ids";
 pub const TOOL_CALL_ACK_SESSION_MESSAGE_IDS_INTERNAL_FIELD: &str =
@@ -32,6 +33,15 @@ pub const TOOL_CALL_EXPECTATION_METADATA_FIELDS: &[&str] = &[
 
 pub fn is_tool_call_expectation_metadata_field(field: &str) -> bool {
     TOOL_CALL_EXPECTATION_METADATA_FIELDS.contains(&field)
+}
+
+pub fn is_valid_session_id(session_id: &str) -> bool {
+    session_id.starts_with(SESSION_ID_PREFIX)
+        && session_id.len() > SESSION_ID_PREFIX.len()
+        && session_id
+            .as_bytes()
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
 }
 
 pub const EXPLORATION_TOOL_NAMES: &[&str] = &[

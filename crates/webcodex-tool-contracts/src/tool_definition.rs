@@ -2,7 +2,7 @@
 //!
 //! This module is the central declaration point for runtime tool names,
 //! model-facing visibility/spec association, manifest category, runtime metadata,
-//! and agent capability. Non-runtime route metadata fallbacks remain in `metadata.rs`
+//! and Runner capability requirements. Non-runtime route metadata fallbacks remain in `metadata.rs`
 //! while the registry migration proceeds in small steps.
 
 mod agent_tasks;
@@ -50,48 +50,45 @@ pub use super::tool_policy::{
     adaptive_runtime_direct_tool_definitions, is_adaptive_runtime_direct_tool,
     is_model_visible_tool_name, lookup_tool_definition, model_visible_tool_definitions,
     model_visible_tool_names_csv, runtime_tool_accepts_context_ack,
-    runtime_tool_advances_context_checkpoint, runtime_tool_agent_capability,
-    runtime_tool_approval_policy, runtime_tool_captures_validation_output, runtime_tool_category,
-    runtime_tool_disabled_message, runtime_tool_effect_annotations,
-    runtime_tool_extra_accepted_flattened_args, runtime_tool_is_change_summary_like,
-    runtime_tool_is_git_like, runtime_tool_is_read_like, runtime_tool_is_shell_like,
-    runtime_tool_is_write_like, runtime_tool_metadata, runtime_tool_permission_risk,
-    runtime_tool_requires_permission, runtime_tool_session_risk_class,
+    runtime_tool_advances_context_checkpoint, runtime_tool_approval_policy,
+    runtime_tool_captures_validation_output, runtime_tool_category, runtime_tool_disabled_message,
+    runtime_tool_effect_annotations, runtime_tool_extra_accepted_flattened_args,
+    runtime_tool_is_change_summary_like, runtime_tool_is_git_like, runtime_tool_is_read_like,
+    runtime_tool_is_shell_like, runtime_tool_is_write_like, runtime_tool_metadata,
+    runtime_tool_permission_risk, runtime_tool_requires_permission, runtime_tool_runner_capability,
+    runtime_tool_session_risk_class,
 };
 #[cfg(any(test, feature = "root-test-support"))]
 pub use super::tool_policy::{
     is_model_hidden_tool_name, known_tool_names, model_hidden_tool_names,
     runtime_tool_context_continuity_policy, runtime_tool_requires_explicit_business_session,
 };
-use webcodex_core::shell_protocol::{
-    SHELL_CLIENT_CAPABILITY_APPLY_PATCH_MATCH_METADATA, SHELL_CLIENT_CAPABILITY_ASYNC_JOBS,
-    SHELL_CLIENT_CAPABILITY_ASYNC_SHELL_JOBS, SHELL_CLIENT_CAPABILITY_CODING_AGENT_RUNS,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_ACCESSIBILITY_OBSERVE,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_APPLICATION_DISCOVERY,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_APPLICATION_LAUNCH,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_CLIPBOARD_READ,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_CLIPBOARD_WRITE, SHELL_CLIENT_CAPABILITY_COMPUTER_CONTROL,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_DISPLAY_OBSERVE,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_ELEMENT_STATE, SHELL_CLIENT_CAPABILITY_COMPUTER_KEY_INPUT,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_OBSERVE, SHELL_CLIENT_CAPABILITY_COMPUTER_POINTER_CONTROL,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_SCROLL_TO_ELEMENT,
-    SHELL_CLIENT_CAPABILITY_COMPUTER_TEXT_INPUT, SHELL_CLIENT_CAPABILITY_COMPUTER_WINDOW_ACTIVATE,
-    SHELL_CLIENT_CAPABILITY_DETACHED_PROCESS_JOBS, SHELL_CLIENT_CAPABILITY_FILE_READ,
-    SHELL_CLIENT_CAPABILITY_FILE_WRITE, SHELL_CLIENT_CAPABILITY_GIT,
-    SHELL_CLIENT_CAPABILITY_LSP_CALL_HIERARCHY, SHELL_CLIENT_CAPABILITY_LSP_READ_ONLY_NAVIGATION,
-    SHELL_CLIENT_CAPABILITY_PERSISTENT_SHELL, SHELL_CLIENT_CAPABILITY_SHELL,
-    SHELL_CLIENT_CAPABILITY_SKILL_STORE_MANAGE, SHELL_CLIENT_CAPABILITY_STRUCTURED_PROCESS_ARGV,
-    SHELL_CLIENT_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD,
+use webcodex_core::runner_protocol::{
+    RUNNER_CAPABILITY_APPLY_PATCH_MATCH_METADATA, RUNNER_CAPABILITY_ASYNC_JOBS,
+    RUNNER_CAPABILITY_ASYNC_SHELL_JOBS, RUNNER_CAPABILITY_CODING_AGENT_RUNS,
+    RUNNER_CAPABILITY_COMPUTER_ACCESSIBILITY_OBSERVE,
+    RUNNER_CAPABILITY_COMPUTER_APPLICATION_DISCOVERY,
+    RUNNER_CAPABILITY_COMPUTER_APPLICATION_LAUNCH, RUNNER_CAPABILITY_COMPUTER_CLIPBOARD_READ,
+    RUNNER_CAPABILITY_COMPUTER_CLIPBOARD_WRITE, RUNNER_CAPABILITY_COMPUTER_CONTROL,
+    RUNNER_CAPABILITY_COMPUTER_DISPLAY_OBSERVE, RUNNER_CAPABILITY_COMPUTER_ELEMENT_STATE,
+    RUNNER_CAPABILITY_COMPUTER_KEY_INPUT, RUNNER_CAPABILITY_COMPUTER_OBSERVE,
+    RUNNER_CAPABILITY_COMPUTER_POINTER_CONTROL, RUNNER_CAPABILITY_COMPUTER_SCROLL_TO_ELEMENT,
+    RUNNER_CAPABILITY_COMPUTER_TEXT_INPUT, RUNNER_CAPABILITY_COMPUTER_WINDOW_ACTIVATE,
+    RUNNER_CAPABILITY_DETACHED_PROCESS_JOBS, RUNNER_CAPABILITY_FILE_READ,
+    RUNNER_CAPABILITY_FILE_WRITE, RUNNER_CAPABILITY_GIT, RUNNER_CAPABILITY_LSP_CALL_HIERARCHY,
+    RUNNER_CAPABILITY_LSP_READ_ONLY_NAVIGATION, RUNNER_CAPABILITY_PERSISTENT_SHELL,
+    RUNNER_CAPABILITY_SHELL, RUNNER_CAPABILITY_SKILL_STORE_MANAGE,
+    RUNNER_CAPABILITY_STRUCTURED_PROCESS_ARGV, RUNNER_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD,
 };
 
-/// Capability an agent-backed tool requires before dispatch can reach an
-/// agent-backed project.
+/// Runner capability or owner-boundary requirement that must hold before a
+/// Runner-backed tool can dispatch to its Project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentCapability {
-    /// Project-scoped native tools that do not require an agent capability but
-    /// still need the agent owner boundary when the project is agent-backed.
+pub enum RunnerCapabilityRequirement {
+    /// Project-scoped native tools that do not require a Runner capability but
+    /// still need the Runner owner boundary when the Project is Runner-backed.
     OwnerOnly,
-    /// `run_shell`, `apply_unified_diff` (agent path runs `git apply` via shell).
+    /// `run_shell`, `apply_unified_diff` (Runner path runs `git apply` via shell).
     Shell,
     /// General native process + argv execution. This must never be inferred
     /// from shell or structured-validation support.
@@ -102,17 +99,17 @@ pub enum AgentCapability {
     /// Bounded typed script payload execution. Never inferred from raw shell
     /// or either structured argv capability.
     StructuredScript,
-    /// `read_file` (agent path uses the file_read request kind).
+    /// `read_file` (Runner path uses the file_read request kind).
     FileRead,
-    /// Native file mutation requests handled by the agent.
+    /// Native file mutation requests handled by the Runner.
     FileWrite,
     /// Runner-authoritative Codex Patch parsing plus transactional file mutation.
     /// This additive request kind is never inferred from generic file-write support.
     ApplyPatch,
-    /// `git_status` / `git_diff` (agent path runs git via shell; accept either
+    /// `git_status` / `git_diff` (Runner path runs git via shell; accept either
     /// an explicit `git` capability or `shell`).
     GitOrShell,
-    /// `run_job` (agent path starts an async job).
+    /// `run_job` (Runner path starts an async job).
     AsyncJobs,
     /// Explicit process-local Workflow Session persistent shells.
     PersistentShell,
@@ -144,7 +141,7 @@ pub enum AgentCapability {
     ComputerWindowActivate,
     /// Native bounded Accessibility text input on the exact target Runner.
     ComputerTextInput,
-    /// Read-only agent-side semantic navigation through constrained LSP profiles.
+    /// Read-only Runner-side semantic navigation through constrained LSP profiles.
     LspReadOnlyNavigation,
     /// Bounded typed call-hierarchy traversal; never inferred from navigation.
     LspCallHierarchy,
@@ -155,85 +152,79 @@ pub enum AgentCapability {
     SkillStoreManage,
 }
 
-impl AgentCapability {
+impl RunnerCapabilityRequirement {
     pub fn label(self) -> &'static str {
         match self {
             Self::OwnerOnly => "owner boundary",
-            Self::Shell => SHELL_CLIENT_CAPABILITY_SHELL,
-            Self::StructuredProcess => SHELL_CLIENT_CAPABILITY_STRUCTURED_PROCESS_ARGV,
-            Self::DetachedProcess => SHELL_CLIENT_CAPABILITY_DETACHED_PROCESS_JOBS,
-            Self::StructuredScript => SHELL_CLIENT_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD,
-            Self::FileRead => SHELL_CLIENT_CAPABILITY_FILE_READ,
-            Self::FileWrite => SHELL_CLIENT_CAPABILITY_FILE_WRITE,
-            Self::ApplyPatch => SHELL_CLIENT_CAPABILITY_APPLY_PATCH_MATCH_METADATA,
+            Self::Shell => RUNNER_CAPABILITY_SHELL,
+            Self::StructuredProcess => RUNNER_CAPABILITY_STRUCTURED_PROCESS_ARGV,
+            Self::DetachedProcess => RUNNER_CAPABILITY_DETACHED_PROCESS_JOBS,
+            Self::StructuredScript => RUNNER_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD,
+            Self::FileRead => RUNNER_CAPABILITY_FILE_READ,
+            Self::FileWrite => RUNNER_CAPABILITY_FILE_WRITE,
+            Self::ApplyPatch => RUNNER_CAPABILITY_APPLY_PATCH_MATCH_METADATA,
             Self::GitOrShell => "shell or git",
             Self::AsyncJobs => "async shell jobs",
-            Self::PersistentShell => SHELL_CLIENT_CAPABILITY_PERSISTENT_SHELL,
-            Self::ComputerObserve => SHELL_CLIENT_CAPABILITY_COMPUTER_OBSERVE,
-            Self::ComputerApplicationDiscovery => {
-                SHELL_CLIENT_CAPABILITY_COMPUTER_APPLICATION_DISCOVERY
-            }
-            Self::ComputerApplicationLaunch => SHELL_CLIENT_CAPABILITY_COMPUTER_APPLICATION_LAUNCH,
-            Self::ComputerDisplayObserve => SHELL_CLIENT_CAPABILITY_COMPUTER_DISPLAY_OBSERVE,
-            Self::ComputerClipboardRead => SHELL_CLIENT_CAPABILITY_COMPUTER_CLIPBOARD_READ,
-            Self::ComputerClipboardWrite => SHELL_CLIENT_CAPABILITY_COMPUTER_CLIPBOARD_WRITE,
-            Self::ComputerPointerControl => SHELL_CLIENT_CAPABILITY_COMPUTER_POINTER_CONTROL,
-            Self::ComputerAccessibilityObserve => {
-                SHELL_CLIENT_CAPABILITY_COMPUTER_ACCESSIBILITY_OBSERVE
-            }
-            Self::ComputerElementState => SHELL_CLIENT_CAPABILITY_COMPUTER_ELEMENT_STATE,
-            Self::ComputerControl => SHELL_CLIENT_CAPABILITY_COMPUTER_CONTROL,
-            Self::ComputerScrollToElement => SHELL_CLIENT_CAPABILITY_COMPUTER_SCROLL_TO_ELEMENT,
-            Self::ComputerKeyInput => SHELL_CLIENT_CAPABILITY_COMPUTER_KEY_INPUT,
-            Self::ComputerWindowActivate => SHELL_CLIENT_CAPABILITY_COMPUTER_WINDOW_ACTIVATE,
-            Self::ComputerTextInput => SHELL_CLIENT_CAPABILITY_COMPUTER_TEXT_INPUT,
-            Self::LspReadOnlyNavigation => SHELL_CLIENT_CAPABILITY_LSP_READ_ONLY_NAVIGATION,
-            Self::LspCallHierarchy => SHELL_CLIENT_CAPABILITY_LSP_CALL_HIERARCHY,
-            Self::CodingAgentRuns => SHELL_CLIENT_CAPABILITY_CODING_AGENT_RUNS,
-            Self::SkillStoreManage => SHELL_CLIENT_CAPABILITY_SKILL_STORE_MANAGE,
+            Self::PersistentShell => RUNNER_CAPABILITY_PERSISTENT_SHELL,
+            Self::ComputerObserve => RUNNER_CAPABILITY_COMPUTER_OBSERVE,
+            Self::ComputerApplicationDiscovery => RUNNER_CAPABILITY_COMPUTER_APPLICATION_DISCOVERY,
+            Self::ComputerApplicationLaunch => RUNNER_CAPABILITY_COMPUTER_APPLICATION_LAUNCH,
+            Self::ComputerDisplayObserve => RUNNER_CAPABILITY_COMPUTER_DISPLAY_OBSERVE,
+            Self::ComputerClipboardRead => RUNNER_CAPABILITY_COMPUTER_CLIPBOARD_READ,
+            Self::ComputerClipboardWrite => RUNNER_CAPABILITY_COMPUTER_CLIPBOARD_WRITE,
+            Self::ComputerPointerControl => RUNNER_CAPABILITY_COMPUTER_POINTER_CONTROL,
+            Self::ComputerAccessibilityObserve => RUNNER_CAPABILITY_COMPUTER_ACCESSIBILITY_OBSERVE,
+            Self::ComputerElementState => RUNNER_CAPABILITY_COMPUTER_ELEMENT_STATE,
+            Self::ComputerControl => RUNNER_CAPABILITY_COMPUTER_CONTROL,
+            Self::ComputerScrollToElement => RUNNER_CAPABILITY_COMPUTER_SCROLL_TO_ELEMENT,
+            Self::ComputerKeyInput => RUNNER_CAPABILITY_COMPUTER_KEY_INPUT,
+            Self::ComputerWindowActivate => RUNNER_CAPABILITY_COMPUTER_WINDOW_ACTIVATE,
+            Self::ComputerTextInput => RUNNER_CAPABILITY_COMPUTER_TEXT_INPUT,
+            Self::LspReadOnlyNavigation => RUNNER_CAPABILITY_LSP_READ_ONLY_NAVIGATION,
+            Self::LspCallHierarchy => RUNNER_CAPABILITY_LSP_CALL_HIERARCHY,
+            Self::CodingAgentRuns => RUNNER_CAPABILITY_CODING_AGENT_RUNS,
+            Self::SkillStoreManage => RUNNER_CAPABILITY_SKILL_STORE_MANAGE,
         }
     }
 
     pub fn registry_capabilities(self) -> &'static [&'static str] {
         match self {
             Self::OwnerOnly => &[],
-            Self::Shell => &[SHELL_CLIENT_CAPABILITY_SHELL],
-            Self::StructuredProcess => &[SHELL_CLIENT_CAPABILITY_STRUCTURED_PROCESS_ARGV],
-            Self::DetachedProcess => &[SHELL_CLIENT_CAPABILITY_DETACHED_PROCESS_JOBS],
-            Self::StructuredScript => &[SHELL_CLIENT_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD],
-            Self::FileRead => &[SHELL_CLIENT_CAPABILITY_FILE_READ],
-            Self::FileWrite => &[SHELL_CLIENT_CAPABILITY_FILE_WRITE],
-            Self::ApplyPatch => &[SHELL_CLIENT_CAPABILITY_APPLY_PATCH_MATCH_METADATA],
-            Self::GitOrShell => &[SHELL_CLIENT_CAPABILITY_SHELL, SHELL_CLIENT_CAPABILITY_GIT],
+            Self::Shell => &[RUNNER_CAPABILITY_SHELL],
+            Self::StructuredProcess => &[RUNNER_CAPABILITY_STRUCTURED_PROCESS_ARGV],
+            Self::DetachedProcess => &[RUNNER_CAPABILITY_DETACHED_PROCESS_JOBS],
+            Self::StructuredScript => &[RUNNER_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD],
+            Self::FileRead => &[RUNNER_CAPABILITY_FILE_READ],
+            Self::FileWrite => &[RUNNER_CAPABILITY_FILE_WRITE],
+            Self::ApplyPatch => &[RUNNER_CAPABILITY_APPLY_PATCH_MATCH_METADATA],
+            Self::GitOrShell => &[RUNNER_CAPABILITY_SHELL, RUNNER_CAPABILITY_GIT],
             Self::AsyncJobs => &[
-                SHELL_CLIENT_CAPABILITY_ASYNC_JOBS,
-                SHELL_CLIENT_CAPABILITY_ASYNC_SHELL_JOBS,
+                RUNNER_CAPABILITY_ASYNC_JOBS,
+                RUNNER_CAPABILITY_ASYNC_SHELL_JOBS,
             ],
-            Self::PersistentShell => &[SHELL_CLIENT_CAPABILITY_PERSISTENT_SHELL],
-            Self::ComputerObserve => &[SHELL_CLIENT_CAPABILITY_COMPUTER_OBSERVE],
+            Self::PersistentShell => &[RUNNER_CAPABILITY_PERSISTENT_SHELL],
+            Self::ComputerObserve => &[RUNNER_CAPABILITY_COMPUTER_OBSERVE],
             Self::ComputerApplicationDiscovery => {
-                &[SHELL_CLIENT_CAPABILITY_COMPUTER_APPLICATION_DISCOVERY]
+                &[RUNNER_CAPABILITY_COMPUTER_APPLICATION_DISCOVERY]
             }
-            Self::ComputerApplicationLaunch => {
-                &[SHELL_CLIENT_CAPABILITY_COMPUTER_APPLICATION_LAUNCH]
-            }
-            Self::ComputerDisplayObserve => &[SHELL_CLIENT_CAPABILITY_COMPUTER_DISPLAY_OBSERVE],
-            Self::ComputerClipboardRead => &[SHELL_CLIENT_CAPABILITY_COMPUTER_CLIPBOARD_READ],
-            Self::ComputerClipboardWrite => &[SHELL_CLIENT_CAPABILITY_COMPUTER_CLIPBOARD_WRITE],
-            Self::ComputerPointerControl => &[SHELL_CLIENT_CAPABILITY_COMPUTER_POINTER_CONTROL],
+            Self::ComputerApplicationLaunch => &[RUNNER_CAPABILITY_COMPUTER_APPLICATION_LAUNCH],
+            Self::ComputerDisplayObserve => &[RUNNER_CAPABILITY_COMPUTER_DISPLAY_OBSERVE],
+            Self::ComputerClipboardRead => &[RUNNER_CAPABILITY_COMPUTER_CLIPBOARD_READ],
+            Self::ComputerClipboardWrite => &[RUNNER_CAPABILITY_COMPUTER_CLIPBOARD_WRITE],
+            Self::ComputerPointerControl => &[RUNNER_CAPABILITY_COMPUTER_POINTER_CONTROL],
             Self::ComputerAccessibilityObserve => {
-                &[SHELL_CLIENT_CAPABILITY_COMPUTER_ACCESSIBILITY_OBSERVE]
+                &[RUNNER_CAPABILITY_COMPUTER_ACCESSIBILITY_OBSERVE]
             }
-            Self::ComputerElementState => &[SHELL_CLIENT_CAPABILITY_COMPUTER_ELEMENT_STATE],
-            Self::ComputerControl => &[SHELL_CLIENT_CAPABILITY_COMPUTER_CONTROL],
-            Self::ComputerScrollToElement => &[SHELL_CLIENT_CAPABILITY_COMPUTER_SCROLL_TO_ELEMENT],
-            Self::ComputerKeyInput => &[SHELL_CLIENT_CAPABILITY_COMPUTER_KEY_INPUT],
-            Self::ComputerWindowActivate => &[SHELL_CLIENT_CAPABILITY_COMPUTER_WINDOW_ACTIVATE],
-            Self::ComputerTextInput => &[SHELL_CLIENT_CAPABILITY_COMPUTER_TEXT_INPUT],
-            Self::LspReadOnlyNavigation => &[SHELL_CLIENT_CAPABILITY_LSP_READ_ONLY_NAVIGATION],
-            Self::LspCallHierarchy => &[SHELL_CLIENT_CAPABILITY_LSP_CALL_HIERARCHY],
-            Self::CodingAgentRuns => &[SHELL_CLIENT_CAPABILITY_CODING_AGENT_RUNS],
-            Self::SkillStoreManage => &[SHELL_CLIENT_CAPABILITY_SKILL_STORE_MANAGE],
+            Self::ComputerElementState => &[RUNNER_CAPABILITY_COMPUTER_ELEMENT_STATE],
+            Self::ComputerControl => &[RUNNER_CAPABILITY_COMPUTER_CONTROL],
+            Self::ComputerScrollToElement => &[RUNNER_CAPABILITY_COMPUTER_SCROLL_TO_ELEMENT],
+            Self::ComputerKeyInput => &[RUNNER_CAPABILITY_COMPUTER_KEY_INPUT],
+            Self::ComputerWindowActivate => &[RUNNER_CAPABILITY_COMPUTER_WINDOW_ACTIVATE],
+            Self::ComputerTextInput => &[RUNNER_CAPABILITY_COMPUTER_TEXT_INPUT],
+            Self::LspReadOnlyNavigation => &[RUNNER_CAPABILITY_LSP_READ_ONLY_NAVIGATION],
+            Self::LspCallHierarchy => &[RUNNER_CAPABILITY_LSP_CALL_HIERARCHY],
+            Self::CodingAgentRuns => &[RUNNER_CAPABILITY_CODING_AGENT_RUNS],
+            Self::SkillStoreManage => &[RUNNER_CAPABILITY_SKILL_STORE_MANAGE],
         }
     }
 
@@ -295,10 +286,10 @@ pub struct ToolDefinition {
     pub category: &'static str,
     pub metadata: ToolMetadata,
     pub policy: ToolDefinitionPolicy,
-    /// Agent capability required before dispatch reaches an agent-backed
-    /// project. `None` means the tool is not agent-dispatched or enforces its
+    /// Runner capability/owner requirement before dispatch reaches a Runner-backed
+    /// Project. `None` means the tool is not Runner-dispatched or enforces its
     /// ownership boundary inside a specialized handler.
-    pub agent_capability: Option<AgentCapability>,
+    pub runner_capability: Option<RunnerCapabilityRequirement>,
 }
 
 pub const TOOL_CATEGORY_AGENT_TASK: &str = "agent_task";
@@ -422,7 +413,7 @@ const fn def(
     name: &'static str,
     visibility: ToolVisibility,
     category: &'static str,
-    agent_capability: Option<AgentCapability>,
+    runner_capability: Option<RunnerCapabilityRequirement>,
     provider_id: &'static str,
     semantic: ToolSemanticContract,
     required_scope: Option<&'static str>,
@@ -448,7 +439,7 @@ const fn def(
             shell_like,
         ),
         policy: ToolDefinitionPolicy::DEFAULT,
-        agent_capability,
+        runner_capability,
     }
 }
 

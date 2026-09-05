@@ -1,7 +1,7 @@
-use super::helpers::{project_relative_agent_cwd, resolve_agent_cwd};
+use super::helpers::{project_relative_runner_cwd, resolve_runner_cwd};
 use super::{ExecutionPurpose, ExecutionShell, ToolResult, ToolRuntime};
 use crate::projects::ProjectConfig;
-use crate::shell_protocol::{
+use crate::runner_protocol::{
     PersistentShellRequest, PersistentShellResult, ShellJobContext, RAW_SHELL_COMMAND_MAX_BYTES,
 };
 use serde_json::json;
@@ -23,7 +23,7 @@ struct SessionShellRecord {
     executor: String,
     client_id: Option<String>,
     /// Named SSH resource this shell is bound to, if any. `None` for local and
-    /// plain agent shells. Bound at open and never re-derived from Session
+    /// plain Runner shells. Bound at open and never re-derived from Session
     /// context, so a later context change cannot redirect an open shell.
     resource: Option<String>,
     shell: String,
@@ -451,7 +451,7 @@ impl ToolRuntime {
                 purpose: None,
             };
             let result = match self
-                .run_agent_persistent_shell(&client_id, request, Some(job_context), 35)
+                .run_runner_persistent_shell(&client_id, request, Some(job_context), 35)
                 .await
             {
                 Ok(result) => result,
@@ -486,7 +486,7 @@ impl ToolRuntime {
             );
         }
         let client_id = project_config.client_id.clone();
-        let effective_cwd = match resolve_agent_cwd(&project_config, cwd.as_deref()) {
+        let effective_cwd = match resolve_runner_cwd(&project_config, cwd.as_deref()) {
             Ok(cwd) => cwd,
             Err(error) => return shell_tool_error("persistent_shell_cwd_invalid", error, None),
         };
@@ -518,7 +518,7 @@ impl ToolRuntime {
             purpose: None,
         };
         let result = match self
-            .run_agent_persistent_shell(&client_id, request, None, 35)
+            .run_runner_persistent_shell(&client_id, request, None, 35)
             .await
         {
             Ok(result) => result,
@@ -607,7 +607,7 @@ impl ToolRuntime {
             purpose: purpose.map(|purpose| purpose.as_str().to_string()),
         };
         let result = self
-            .run_agent_persistent_shell(client_id, request, record.job_context(), timeout_secs + 5)
+            .run_runner_persistent_shell(client_id, request, record.job_context(), timeout_secs + 5)
             .await;
         let result = match result {
             Ok(result) => result,
@@ -654,7 +654,7 @@ impl ToolRuntime {
             return persistent_record_to_tool(record, &project_config, "status");
         }
         let result = self
-            .run_agent_persistent_shell(
+            .run_runner_persistent_shell(
                 record.client_id.as_deref().unwrap_or_default(),
                 PersistentShellRequest {
                     action: "status".to_string(),
@@ -742,7 +742,7 @@ impl ToolRuntime {
         record: &SessionShellRecord,
         reason: &str,
     ) -> Result<PersistentShellResult, String> {
-        self.run_agent_persistent_shell(
+        self.run_runner_persistent_shell(
             record.client_id.as_deref().unwrap_or_default(),
             PersistentShellRequest {
                 action: "close".to_string(),
@@ -768,7 +768,7 @@ impl ToolRuntime {
             .filter(|record| record.runtime_project_id == runtime_project_id)
         {
             let result = self
-                .run_agent_persistent_shell(
+                .run_runner_persistent_shell(
                     record.client_id.as_deref().unwrap_or_default(),
                     PersistentShellRequest {
                         action: "status".to_string(),
@@ -911,7 +911,7 @@ impl ToolRuntime {
             );
     }
 
-    async fn run_agent_persistent_shell(
+    async fn run_runner_persistent_shell(
         &self,
         client_id: &str,
         request: PersistentShellRequest,
@@ -919,7 +919,7 @@ impl ToolRuntime {
         wait_secs: u64,
     ) -> Result<PersistentShellResult, String> {
         let (request_id, receiver) = self
-            .shell_clients
+            .runner_registry
             .enqueue_persistent_shell(
                 client_id.to_string(),
                 request,
@@ -930,11 +930,11 @@ impl ToolRuntime {
         match tokio::time::timeout(Duration::from_secs(wait_secs), receiver).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => {
-                self.shell_clients.cancel_request(&request_id).await;
+                self.runner_registry.cancel_request(&request_id).await;
                 Err("persistent_shell_result_lost: Runner result waiter was dropped".to_string())
             }
             Err(_) => {
-                let dispatched = self.shell_clients.cancel_request(&request_id).await;
+                let dispatched = self.runner_registry.cancel_request(&request_id).await;
                 Err(if dispatched {
                     "persistent_shell_runner_unavailable: result timed out after dispatch; shell state is lost"
                         .to_string()
@@ -1068,7 +1068,7 @@ fn persistent_result_to_tool(
 
 fn relative_cwd(project: &ProjectConfig, cwd: Option<&str>) -> Option<String> {
     let cwd = cwd?;
-    project_relative_agent_cwd(project, cwd).ok()
+    project_relative_runner_cwd(project, cwd).ok()
 }
 
 fn shell_tool_error_from_message(message: String, shell_id: Option<&str>) -> ToolResult {

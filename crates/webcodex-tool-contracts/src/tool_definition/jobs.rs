@@ -1,4 +1,4 @@
-use super::AgentCapability::{
+use super::RunnerCapabilityRequirement::{
     AsyncJobs, DetachedProcess, PersistentShell, Shell, StructuredProcess, StructuredScript,
 };
 use super::ToolVisibility::{ModelHidden, ModelVisible};
@@ -9,7 +9,7 @@ use super::{
 use crate::metadata::{
     ToolPathHint::None as NoPath,
     ToolRisk::{JobRun, Read},
-    JOB_RUN, RUNTIME_READ, TOOL_PROVIDER_AGENT, TOOL_PROVIDER_NATIVE,
+    JOB_RUN, RUNTIME_READ, TOOL_PROVIDER_NATIVE, TOOL_PROVIDER_RUNNER,
 };
 use crate::registry::input_schemas::{
     job_log_input_schema, job_status_input_schema, list_jobs_input_schema,
@@ -28,7 +28,7 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
                 ModelVisible,
                 TOOL_CATEGORY_JOB,
                 Some(StructuredProcess),
-                TOOL_PROVIDER_AGENT,
+                TOOL_PROVIDER_RUNNER,
                 super::ToolSemanticContract {
                     effect: super::ToolEffect::Execute,
                     risk: JobRun,
@@ -41,7 +41,7 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
                 true,
                 true,
             ),
-            "Run one native executable with literal argv and no shell parsing. Long work continues as the same execution; choose a shell command tool only when shell syntax or a Windows batch file is required.",
+            "Run one isolated one-shot native executable with literal argv and no shell parsing. For repeated commands that need shared cwd, environment, or shell state, prefer open_session_shell + session_shell_exec. Long work continues as the same execution; choose a shell command tool only when shell syntax or a Windows batch file is required.",
             run_process_input_schema,
         ),
         70,
@@ -53,7 +53,7 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
                 ModelVisible,
                 TOOL_CATEGORY_JOB,
                 Some(DetachedProcess),
-                TOOL_PROVIDER_AGENT,
+                TOOL_PROVIDER_RUNNER,
                 super::ToolSemanticContract {
                     effect: super::ToolEffect::Execute,
                     risk: JobRun,
@@ -77,7 +77,7 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
             ModelVisible,
             TOOL_CATEGORY_JOB,
             Some(StructuredScript),
-            TOOL_PROVIDER_AGENT,
+            TOOL_PROVIDER_RUNNER,
             super::ToolSemanticContract {
                 effect: super::ToolEffect::Execute,
                 risk: JobRun,
@@ -99,7 +99,7 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
             ModelVisible,
             TOOL_CATEGORY_JOB,
             Some(Shell),
-            TOOL_PROVIDER_AGENT,
+            TOOL_PROVIDER_RUNNER,
             super::ToolSemanticContract {
                 effect: super::ToolEffect::Execute,
                 risk: JobRun,
@@ -112,60 +112,66 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
             true,
             true,
         ),
-        "Run one bounded shell command as an escape hatch for real shell syntax. Prefer structured validation, process, and edit tools when they fit; use asynchronous execution for longer work.",
+        "Run one bounded shell command as an escape hatch for real shell syntax. For a sequence that needs persistent cwd, exports, or functions, use open_session_shell + session_shell_exec instead. Prefer structured validation, process, and edit tools when they fit; use asynchronous execution for longer work.",
         run_shell_input_schema,
     ),
-    requires_explicit_business_session(model_spec(
-        def(
-            "open_session_shell",
-            ModelVisible,
-            TOOL_CATEGORY_JOB,
-            Some(PersistentShell),
-            TOOL_PROVIDER_AGENT,
-            super::ToolSemanticContract {
-                effect: super::ToolEffect::Execute,
-                risk: JobRun,
-                approval: super::ToolApprovalPolicy::Standard,
-                idempotency: super::ToolIdempotency::NonIdempotent,
-            },
-            Some(JOB_RUN),
-            true,
-            NoPath,
-            true,
-            true,
-        ),
-        "Open one bounded long-lived shell for a Workflow Session: local sh/bash, Windows PowerShell, or sh/bash on a named SSH resource. Keeps cwd, variables, and functions isolated from one-shot commands and other Sessions.",
-        open_session_shell_input_schema,
-    )),
-    requires_explicit_business_session(model_spec(
-        def(
-            "session_shell_exec",
-            ModelVisible,
-            TOOL_CATEGORY_JOB,
-            Some(PersistentShell),
-            TOOL_PROVIDER_AGENT,
-            super::ToolSemanticContract {
-                effect: super::ToolEffect::Execute,
-                risk: JobRun,
-                approval: super::ToolApprovalPolicy::Standard,
-                idempotency: super::ToolIdempotency::NonIdempotent,
-            },
-            Some(JOB_RUN),
-            true,
-            NoPath,
-            true,
-            true,
-        ),
-        "Execute one framed command in an existing Session persistent shell. Commands are serialized; cwd, variables, exports, functions, and umask remain in that shell process.",
-        session_shell_exec_input_schema,
-    )),
+    adaptive_runtime_direct(
+        requires_explicit_business_session(model_spec(
+            def(
+                "open_session_shell",
+                ModelVisible,
+                TOOL_CATEGORY_JOB,
+                Some(PersistentShell),
+                TOOL_PROVIDER_RUNNER,
+                super::ToolSemanticContract {
+                    effect: super::ToolEffect::Execute,
+                    risk: JobRun,
+                    approval: super::ToolApprovalPolicy::Standard,
+                    idempotency: super::ToolIdempotency::NonIdempotent,
+                },
+                Some(JOB_RUN),
+                true,
+                NoPath,
+                true,
+                true,
+            ),
+            "Open one bounded long-lived shell for an explicit Workflow Session: local sh/bash, Windows PowerShell, or sh/bash through the named SSH resource already bound in execution_context.resource. Bind an already configured remote resource with update_session_context before opening; there is no per-shell host/resource parameter. The Runner owns the SSH connection, and the SSH target does not need WebCodex Runner. Keeps cwd, variables, and functions isolated from one-shot commands and other Sessions.",
+            open_session_shell_input_schema,
+        )),
+        71,
+    ),
+    adaptive_runtime_direct(
+        requires_explicit_business_session(model_spec(
+            def(
+                "session_shell_exec",
+                ModelVisible,
+                TOOL_CATEGORY_JOB,
+                Some(PersistentShell),
+                TOOL_PROVIDER_RUNNER,
+                super::ToolSemanticContract {
+                    effect: super::ToolEffect::Execute,
+                    risk: JobRun,
+                    approval: super::ToolApprovalPolicy::Standard,
+                    idempotency: super::ToolIdempotency::NonIdempotent,
+                },
+                Some(JOB_RUN),
+                true,
+                NoPath,
+                true,
+                true,
+            ),
+            "Execute one framed command in an existing Session persistent shell. Reuse it for sequences that need shared cwd, variables, exports, functions, or umask; commands are serialized in the same shell process.",
+            session_shell_exec_input_schema,
+        )),
+        72,
+    ),
     requires_explicit_business_session(model_spec(
         def(
             "session_shell_status",
             ModelVisible,
             TOOL_CATEGORY_JOB,
             Some(PersistentShell),
-            TOOL_PROVIDER_AGENT,
+            TOOL_PROVIDER_RUNNER,
             super::ToolSemanticContract {
                 effect: super::ToolEffect::Observe,
                 risk: Read,
@@ -188,7 +194,7 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
                 ModelVisible,
                 TOOL_CATEGORY_JOB,
                 Some(PersistentShell),
-                TOOL_PROVIDER_AGENT,
+                TOOL_PROVIDER_RUNNER,
                 super::ToolSemanticContract {
                     effect: super::ToolEffect::Mutate,
                     risk: JobRun,
@@ -213,7 +219,7 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
                 ModelVisible,
                 TOOL_CATEGORY_JOB,
                 Some(AsyncJobs),
-                TOOL_PROVIDER_AGENT,
+                TOOL_PROVIDER_RUNNER,
                 super::ToolSemanticContract {
                     effect: super::ToolEffect::Execute,
                     risk: JobRun,
@@ -320,7 +326,7 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
                 false,
                 false,
             ),
-            "Observe 1 to 8 Jobs with bounded baseline/delta logs and isolated errors. Return each opaque token unchanged for compact follow-ups. Optionally wait once for any change; never launches, retries, stops, or subscribes.",
+            "Observe 1 to 8 existing Jobs with bounded baseline/delta logs and isolated item errors. Optionally performs one shared wait for the batch and returns when any relevant Job changes; final items are non-waiting snapshots. Return each opaque observation token unchanged on follow-up. unknown_job exposes recovery_tool=list_jobs for direct caller-visible Job re-observation. Never launches, retries, stops, or subscribes.",
             observe_jobs_input_schema,
         ),
         80,
@@ -328,27 +334,30 @@ pub(super) const EXECUTION_DEFINITIONS: &[ToolDefinition] = &[
 ];
 
 pub(super) const LISTING_DEFINITIONS: &[ToolDefinition] = &[
-    model_spec(
-        def(
-            "list_jobs",
-            ModelVisible,
-            TOOL_CATEGORY_JOB,
-            None,
-            TOOL_PROVIDER_NATIVE,
-            super::ToolSemanticContract {
-                effect: super::ToolEffect::Observe,
-                risk: Read,
-                approval: super::ToolApprovalPolicy::None,
-                idempotency: super::ToolIdempotency::PureRead,
-            },
-            Some(RUNTIME_READ),
-            false,
-            NoPath,
-            false,
-            false,
+    adaptive_runtime_direct(
+        model_spec(
+            def(
+                "list_jobs",
+                ModelVisible,
+                TOOL_CATEGORY_JOB,
+                None,
+                TOOL_PROVIDER_NATIVE,
+                super::ToolSemanticContract {
+                    effect: super::ToolEffect::Observe,
+                    risk: Read,
+                    approval: super::ToolApprovalPolicy::None,
+                    idempotency: super::ToolIdempotency::PureRead,
+                },
+                Some(RUNTIME_READ),
+                false,
+                NoPath,
+                false,
+                false,
+            ),
+            "List bounded lifecycle metadata for caller-visible Jobs. Inside a coding Session, prefer exact project/session_id filters; status combines with them using AND semantics. stdout/stderr bodies are never included.",
+            list_jobs_input_schema,
         ),
-        "List bounded lifecycle metadata for caller-visible Jobs. Inside a coding Session, prefer exact project/session_id filters; status combines with them using AND semantics. stdout/stderr bodies are never included.",
-        list_jobs_input_schema,
+        85,
     ),
     def(
         "job_tail",

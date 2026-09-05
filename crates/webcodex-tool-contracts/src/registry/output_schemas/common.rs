@@ -23,6 +23,39 @@ pub fn nullable_schema(kind: &str, description: &str) -> Value {
     })
 }
 
+pub fn job_activity_schema() -> Value {
+    json!({
+        "anyOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "state": {"type": "string", "enum": ["working", "waiting"]},
+                    "phase": {
+                        "type": "string",
+                        "enum": [
+                            "process_running",
+                            "validation_format",
+                            "validation_check",
+                            "validation_test",
+                            "cargo_waiting_for_build_lock",
+                            "cargo_compiling",
+                            "cargo_checking"
+                        ]
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["runner_execution", "validation_plan", "cargo_output"]
+                    }
+                },
+                "required": ["state", "phase", "source"]
+            },
+            {"type": "null"}
+        ],
+        "description": "Runner-owned bounded current activity for an active Job. Observation only: it never replaces canonical status, proves completion, or grants retry/continuation authority. null means unavailable, terminal, or temporarily untrusted during recovery."
+    })
+}
+
 pub fn exploration_tool_name_schema() -> Value {
     json!({
         "anyOf": [
@@ -231,9 +264,31 @@ pub fn search_context_line_schema() -> Value {
 
 pub fn search_match_schema() -> Value {
     let context_lines = array_schema(search_context_line_schema(), "Context lines.");
+    let read_hint = json!({
+        "type": "object",
+        "description": "Ready-to-use read_file/read_files item for bounded expansion around this match. Reuse the same project; this hint performs no read and contains no additional file content.",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Same trusted project-relative file path as the match."
+            },
+            "start_line": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Deterministic 1-based expansion start, up to 20 lines before the match."
+            },
+            "limit": {
+                "type": "integer",
+                "const": 80,
+                "description": "Deterministic bounded line count for read_file/read_files expansion."
+            }
+        },
+        "required": ["path", "start_line", "limit"],
+        "additionalProperties": false
+    });
     json!({
         "type": "object",
-        "description": "Search match with path, 1-based line, preview, and bounded context lines.",
+        "description": "Search match with path, 1-based line, preview, bounded context lines, and deterministic search-to-read continuation metadata.",
         "properties": {
             "path": {
                 "type": "string",
@@ -249,8 +304,9 @@ pub fn search_match_schema() -> Value {
             },
             "context_before": context_lines.clone(),
             "context_after": context_lines,
+            "read_hint": read_hint,
         },
-        "required": ["path", "line", "preview", "context_before", "context_after"],
+        "required": ["path", "line", "preview", "context_before", "context_after", "read_hint"],
         "additionalProperties": true
     })
 }
@@ -422,7 +478,7 @@ pub fn cargo_test_count_assertion_schema() -> Value {
             "minimum_tests": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": webcodex_core::shell_protocol::CARGO_TEST_MIN_TESTS_MAX,
+                "maximum": webcodex_core::runner_protocol::CARGO_TEST_MIN_TESTS_MAX,
                 "description": "Effective caller-requested minimum after combining require_tests and min_tests."
             },
             "actual_tests_run": {
@@ -439,9 +495,14 @@ pub fn cargo_test_count_assertion_schema() -> Value {
             "reason_code": {
                 "type": "string",
                 "enum": ["minimum_satisfied", "minimum_not_met", "test_count_unproven"]
+            },
+            "evidence_reason_code": {
+                "type": "string",
+                "enum": ["complete_summary", "output_truncated", "partial_harness_summary", "no_complete_summary"],
+                "description": "Why executed-test count evidence was proven or remained unavailable; this refines evidence diagnostics without changing the assertion verdict."
             }
         },
-        "required": ["minimum_tests", "actual_tests_run", "status", "reason_code"]
+        "required": ["minimum_tests", "actual_tests_run", "status", "reason_code", "evidence_reason_code"]
     })
 }
 

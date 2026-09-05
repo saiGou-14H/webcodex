@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use super::helpers::{
     bounded_tail, command_failed_message, command_outcome_unknown_message,
-    command_rejected_message, command_timeout_message, project_relative_agent_cwd,
-    resolve_agent_cwd, COMMAND_STDIO_TAIL_CHARS,
+    command_rejected_message, command_timeout_message, project_relative_runner_cwd,
+    resolve_runner_cwd, COMMAND_STDIO_TAIL_CHARS,
 };
 use super::shell::{
-    agent_command_lifecycle, command_execution_state_name, dispatch_uncertainty_lifecycle,
+    command_execution_state_name, dispatch_uncertainty_lifecycle, runner_command_lifecycle,
 };
 use super::structured_execution::{
     await_hidden_structured_job, HiddenStructuredJobWait, StructuredExecutionBudget,
@@ -15,11 +15,11 @@ use super::structured_execution::{
 use super::tool_audit::{assertion_validation_identity, run_process_validation_identity};
 use super::{ExecutionPurpose, ToolResult, ToolRuntime};
 use crate::auth::AuthContext;
-use crate::shell_client::{
+use crate::runner_http::{
     process_preview, RunnerFeature, ShellJobStartMetadata, ShellJobVisibility,
     StructuredJobExecution, DETACHED_IDEMPOTENCY_CONFLICT, DETACHED_IDEMPOTENCY_RECOVERY_PREFIX,
 };
-use crate::shell_protocol::{
+use crate::runner_protocol::{
     validate_process_argv, ShellCommandExecutionState, ShellJobInfo, ShellJobOpRequest,
     ShellProcessArgv, PROCESS_CWD_MAX_BYTES, PROCESS_STDIN_MAX_BYTES,
     STRUCTURED_EXECUTION_DIRECT_SYNC_TIMEOUT_MAX_SECS,
@@ -394,7 +394,7 @@ impl ToolRuntime {
             }
         };
         let client_id = proj.client_id.clone();
-        let effective_cwd = match resolve_agent_cwd(&proj, cwd.as_deref()) {
+        let effective_cwd = match resolve_runner_cwd(&proj, cwd.as_deref()) {
             Ok(cwd) => cwd,
             Err(error) => {
                 return process_tool_failure_result(
@@ -408,8 +408,12 @@ impl ToolRuntime {
             }
         };
         let resolved_cwd =
-            project_relative_agent_cwd(&proj, &effective_cwd).unwrap_or_else(|_| ".".to_string());
-        let features = match self.shell_clients.get_client_feature_set(&client_id).await {
+            project_relative_runner_cwd(&proj, &effective_cwd).unwrap_or_else(|_| ".".to_string());
+        let features = match self
+            .runner_registry
+            .get_runner_feature_set(&client_id)
+            .await
+        {
             Ok(features) => features,
             Err(error) => {
                 return process_tool_failure_result(
@@ -432,9 +436,24 @@ impl ToolRuntime {
                 ShellCommandExecutionState::NotStarted,
             );
         }
+        let access = crate::runner_http::runner_access_from_auth(auth);
+        let detached_initiator = match crate::runner_http::detached_initiator_identity_from_auth(auth)
+        {
+            Ok(identity) => identity,
+            Err(error) => {
+                return process_tool_failure_result(
+                    command_rejected_message(
+                        &error,
+                        "observe the deterministic logical Job if an initiating response may have been lost; do not retry with a fresh key unless no Job was admitted.",
+                    ),
+                    classify_process_failure(&error),
+                    ShellCommandExecutionState::NotStarted,
+                )
+            }
+        };
         match self
-            .shell_clients
-            .start_job_with_metadata_for_auth(
+            .runner_registry
+            .start_job_with_metadata_for_access(
                 ShellJobOpRequest {
                     op: "start".to_string(),
                     client_id: Some(client_id),
@@ -461,7 +480,8 @@ impl ToolRuntime {
                     detached_idempotency_key: Some(idempotency_key),
                     ..Default::default()
                 },
-                auth,
+                access.as_ref(),
+                Some(&detached_initiator),
             )
             .await
         {
@@ -633,7 +653,7 @@ impl ToolRuntime {
             }
         };
         let client_id = proj.client_id.clone();
-        let effective_cwd = match resolve_agent_cwd(&proj, cwd.as_deref()) {
+        let effective_cwd = match resolve_runner_cwd(&proj, cwd.as_deref()) {
                 Ok(cwd) => cwd,
                 Err(error) => {
                     return process_tool_failure_result(
@@ -647,7 +667,7 @@ impl ToolRuntime {
                 }
             };
         let resolved_cwd =
-            project_relative_agent_cwd(&proj, &effective_cwd).unwrap_or_else(|_| ".".to_string());
+            project_relative_runner_cwd(&proj, &effective_cwd).unwrap_or_else(|_| ".".to_string());
         // Generation-2 admission guarantees the complete typed structured
         // execution baseline. Only server-owned internal mutations may opt
         // out of model-facing durable Job handoff.
@@ -678,8 +698,8 @@ impl ToolRuntime {
         }
         if async_handoff_available && timeout > budget.sync_wait_secs {
             let job = self
-                .shell_clients
-                .start_job_with_metadata_for_auth(
+                .runner_registry
+                .start_job_with_metadata_for_access(
                     ShellJobOpRequest {
                         op: "start".to_string(),
                         client_id: Some(client_id),
@@ -715,7 +735,8 @@ impl ToolRuntime {
                         stdin,
                         ..Default::default()
                     },
-                    auth,
+                    crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                    None,
                 )
                 .await;
             let job = match job {
@@ -749,7 +770,7 @@ impl ToolRuntime {
                 .structured_execution_sync_wait
                 .min(Duration::from_secs(budget.sync_wait_secs));
             let handoff = await_hidden_structured_job(
-                self.shell_clients.clone(),
+                self.runner_registry.clone(),
                 job.job_id.clone(),
                 wait,
                 auth.cloned(),
@@ -762,38 +783,52 @@ impl ToolRuntime {
                     stderr,
                 }) => {
                     let result = terminal_structured_job_result(&job, stdout, stderr, timeout);
-                    self.shell_clients
+                    self.runner_registry
                         .remove_projected_hidden_structured_job_record(&job.job_id)
                         .await;
                     result
                 }
                 Ok(HiddenStructuredJobWait::Continued {
-                    job,
+                    observation,
                     execution_state,
                     command_started,
-                }) => ToolResult::ok(json!({
-                    "execution_state": execution_state,
-                    "command_started": command_started,
-                    "command_completed": false,
-                    "command_ok": false,
-                    "exit_code": null,
-                    "failure_kind": null,
-                    "tool_failure": false,
-                    "promoted_to_job": true,
-                    "terminal": false,
-                    "job_id": job.job_id,
-                    "job_status": job.status,
-                    "observation_token": job.observation_token,
-                    "effective_timeout_secs": timeout,
-                    "sync_wait_secs": budget.sync_wait_secs,
-                    "async_handoff_available": true,
-                    "stdout_tail": "",
-                    "stderr_tail": "",
-                    "stdout_lines": 0,
-                    "stderr_lines": 0,
-                    "stdout_truncated": false,
-                    "stderr_truncated": false,
-                })),
+                }) => {
+                    let detected_summary =
+                        crate::tool_runtime::jobs::detected_job_summary_with_activity(
+                            Some(&summary),
+                            Some(declared_purpose.as_str()),
+                            &observation.job.status,
+                            observation.job.exit_code.map(i64::from),
+                            &observation.stdout_tail,
+                            &observation.stderr_tail,
+                            observation.job.activity.as_ref(),
+                        );
+                    ToolResult::ok(json!({
+                        "execution_state": execution_state,
+                        "command_started": command_started,
+                        "command_completed": false,
+                        "command_ok": false,
+                        "exit_code": null,
+                        "failure_kind": null,
+                        "tool_failure": false,
+                        "promoted_to_job": true,
+                        "terminal": false,
+                        "job_id": observation.job.job_id,
+                        "job_status": observation.job.status,
+                        "observation_token": observation.job.observation_token,
+                        "activity": observation.job.activity,
+                        "effective_timeout_secs": timeout,
+                        "sync_wait_secs": budget.sync_wait_secs,
+                        "async_handoff_available": true,
+                        "stdout_tail": observation.stdout_tail,
+                        "stderr_tail": observation.stderr_tail,
+                        "stdout_lines": observation.stdout_lines,
+                        "stderr_lines": observation.stderr_lines,
+                        "stdout_truncated": observation.stdout_truncated,
+                        "stderr_truncated": observation.stderr_truncated,
+                        "detected_summary": detected_summary,
+                    }))
+                }
                 Err(error) => outcome_unknown_result(format!(
                     "the durable process Job could not be observed during handoff: {error}"
                 )),
@@ -817,7 +852,7 @@ impl ToolRuntime {
         }
         let wait_timeout = timeout;
         let (request_id, receiver) = match self
-                .shell_clients
+                .runner_registry
                 .enqueue_process(
                     client_id,
                     Some(effective_cwd),
@@ -844,7 +879,7 @@ impl ToolRuntime {
         let mut result =
             match tokio::time::timeout(Duration::from_secs(wait_timeout + 2), receiver).await {
                 Ok(Ok(response)) => {
-                    let state = agent_command_lifecycle(&response, timeout);
+                    let state = runner_command_lifecycle(&response, timeout);
                     let exit_code = response.exit_code;
                     let stdout = response.stdout.unwrap_or_default();
                     let stderr = response.stderr.unwrap_or_default();
@@ -893,7 +928,7 @@ impl ToolRuntime {
                 }
                 Ok(Err(_)) => {
                     let dispatch = self
-                        .shell_clients
+                        .runner_registry
                         .cancel_request_dispatch_state(&request_id)
                         .await;
                     if dispatch == Some(false) {
@@ -913,7 +948,7 @@ impl ToolRuntime {
                 }
                 Err(_) => {
                     let dispatch = self
-                        .shell_clients
+                        .runner_registry
                         .cancel_request_dispatch_state(&request_id)
                         .await;
                     let state = dispatch_uncertainty_lifecycle(dispatch);

@@ -27,8 +27,9 @@ use std::sync::mpsc;
 #[cfg(any(unix, windows))]
 use std::time::Instant;
 use uuid::Uuid;
-use webcodex_core::shell_protocol::{
-    validate_process_argv, ShellCommandExecutionState, ShellJobContext, ShellJobSnapshot,
+use webcodex_core::runner_protocol::{
+    validate_process_argv, ShellCommandExecutionState, ShellJobActivity, ShellJobActivityPhase,
+    ShellJobActivitySource, ShellJobActivityState, ShellJobContext, ShellJobSnapshot,
     ShellJobStreamSnapshot, ShellProcessArgv, JOB_INVENTORY_MAX_JOBS,
     JOB_SNAPSHOT_STREAM_MAX_BYTES, JOB_TERMINAL_RETENTION_SECS, PROCESS_CWD_MAX_BYTES,
     PROCESS_STDIN_MAX_BYTES, STRUCTURED_EXECUTION_TIMEOUT_MAX_SECS,
@@ -180,7 +181,8 @@ pub(crate) struct DetachedJobRecord {
     pub(crate) execution_id: String,
     pub(crate) request_id: String,
     pub(crate) client_id: String,
-    pub(crate) agent_instance_id: String,
+    #[serde(rename = "agent_instance_id")]
+    pub(crate) runner_instance_id: String,
     pub(crate) context: ShellJobContext,
     pub(crate) phase: DetachedJobPhase,
     pub(crate) update_seq: u64,
@@ -221,7 +223,8 @@ pub(crate) struct DetachedStartRequest {
     pub(crate) job_id: String,
     pub(crate) request_id: String,
     pub(crate) client_id: String,
-    pub(crate) agent_instance_id: String,
+    #[serde(rename = "agent_instance_id")]
+    pub(crate) runner_instance_id: String,
     pub(crate) context: ShellJobContext,
     pub(crate) launch: DetachedLaunchSpec,
 }
@@ -641,7 +644,7 @@ impl DetachedJobStore {
             execution_id: execution_id_for(request),
             request_id: request.request_id.clone(),
             client_id: request.client_id.clone(),
-            agent_instance_id: request.agent_instance_id.clone(),
+            runner_instance_id: request.runner_instance_id.clone(),
             context: request.context.clone(),
             phase: DetachedJobPhase::Prepared,
             // JobManager has already projected agent_queued at sequence 1 before
@@ -816,7 +819,7 @@ fn validate_start_request(request: &DetachedStartRequest) -> Result<(), String> 
     validate_identity("job_id", &request.job_id, 256)?;
     validate_identity("request_id", &request.request_id, 256)?;
     validate_identity("client_id", &request.client_id, 128)?;
-    validate_identity("agent_instance_id", &request.agent_instance_id, 256)?;
+    validate_identity("agent_instance_id", &request.runner_instance_id, 256)?;
     let context = serde_json::to_vec(&request.context)
         .map_err(|error| format!("failed to encode detached Job context: {error}"))?;
     if context.len() > DETACHED_CONTEXT_MAX_BYTES {
@@ -898,7 +901,7 @@ fn validate_existing_request(
     if record.job_id != request.job_id
         || record.request_id != request.request_id
         || record.client_id != request.client_id
-        || record.agent_instance_id != request.agent_instance_id
+        || record.runner_instance_id != request.runner_instance_id
         || record.context != request.context
         || record.execution_id != execution_id_for(request)
     {
@@ -929,7 +932,7 @@ fn validate_record(record: &DetachedJobRecord) -> Result<(), String> {
     validate_identity("execution_id", &record.execution_id, 96)?;
     validate_identity("request_id", &record.request_id, 256)?;
     validate_identity("client_id", &record.client_id, 128)?;
-    validate_identity("agent_instance_id", &record.agent_instance_id, 256)?;
+    validate_identity("agent_instance_id", &record.runner_instance_id, 256)?;
     let context = serde_json::to_vec(&record.context)
         .map_err(|error| format!("failed to encode detached Job context: {error}"))?;
     if context.len() > DETACHED_CONTEXT_MAX_BYTES {
@@ -1241,7 +1244,7 @@ fn validate_transition(
         || previous.execution_id != next.execution_id
         || previous.request_id != next.request_id
         || previous.client_id != next.client_id
-        || previous.agent_instance_id != next.agent_instance_id
+        || previous.runner_instance_id != next.runner_instance_id
         || previous.context != next.context
         || previous.created_at_unix_ms != next.created_at_unix_ms
     {
@@ -1354,6 +1357,11 @@ pub(crate) fn snapshot_from_detached_record(
         Some(_) => None,
         None => None,
     };
+    let activity = matches!(status, "running" | "stop_requested").then_some(ShellJobActivity {
+        state: ShellJobActivityState::Working,
+        phase: ShellJobActivityPhase::ProcessRunning,
+        source: ShellJobActivitySource::RunnerExecution,
+    });
     let stream = |output: &DetachedOutputState| ShellJobStreamSnapshot {
         tail: output.tail.clone(),
         first_retained_line: output.first_retained_line,
@@ -1379,6 +1387,7 @@ pub(crate) fn snapshot_from_detached_record(
         stdout: stream(&record.stdout),
         stderr: stream(&record.stderr),
         validation_progress: None,
+        activity,
     })
 }
 

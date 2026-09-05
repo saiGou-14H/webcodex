@@ -2,7 +2,7 @@ use super::config::{
     default_true, project_registry_dir, validate_shell_profile_name, RunnerConfig, RunnerPolicy,
 };
 use super::shell::canonicalize_existing;
-use crate::shell_protocol::{ShellAgentProjectSummary, ShellAgentShellRequest};
+use crate::runner_protocol::{RunnerProjectSummary, RunnerRequest};
 use crate::{err_cmd, ok_cmd, write_created_file};
 use crate::{CommandResult, CreatedProjectPaths};
 use serde::{Deserialize, Serialize};
@@ -97,7 +97,7 @@ pub(crate) struct RunnerProjectFile {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RunnerProjectCache {
-    projects: Vec<ShellAgentProjectSummary>,
+    projects: Vec<RunnerProjectSummary>,
     refreshed_at: Option<Instant>,
 }
 
@@ -557,7 +557,7 @@ fn runner_project_summary_with_shutdown(
     updated_at: i64,
     include_git: bool,
     shutdown: Option<&AtomicBool>,
-) -> ShellAgentProjectSummary {
+) -> RunnerProjectSummary {
     let mut hooks = project.hooks.keys().cloned().collect::<Vec<_>>();
     hooks.sort();
     // The server uses the reported path as part of its repository continuity
@@ -591,7 +591,7 @@ fn runner_project_summary_with_shutdown(
     // sentinel. New auto-registered records keep persisted `kind` empty, but
     // temporarily project that sentinel on the wire when there is no genuine
     // project kind. New Servers ignore it in favor of `registration_source`.
-    ShellAgentProjectSummary {
+    RunnerProjectSummary {
         id: project.id.clone(),
         name: project.name.clone().or_else(|| Some(project.id.clone())),
         path: resolved_path,
@@ -615,7 +615,7 @@ pub(crate) fn runner_project_summary(
     project: &RunnerProjectFile,
     updated_at: i64,
     include_git: bool,
-) -> ShellAgentProjectSummary {
+) -> RunnerProjectSummary {
     runner_project_summary_with_shutdown(project, updated_at, include_git, None)
 }
 
@@ -637,7 +637,7 @@ fn warn_empty_hook_commands(source: &Path, project: &RunnerProjectFile) {
 fn load_runner_project_summaries_from_dir_with_shutdown(
     dir: &Path,
     shutdown: Option<&AtomicBool>,
-) -> Vec<ShellAgentProjectSummary> {
+) -> Vec<RunnerProjectSummary> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -705,14 +705,14 @@ fn load_runner_project_summaries_from_dir_with_shutdown(
     projects
 }
 
-pub(crate) fn load_runner_project_summaries_from_dir(dir: &Path) -> Vec<ShellAgentProjectSummary> {
+pub(crate) fn load_runner_project_summaries_from_dir(dir: &Path) -> Vec<RunnerProjectSummary> {
     load_runner_project_summaries_from_dir_with_shutdown(dir, None)
 }
 
 fn load_runner_project_summaries(
     cfg: &RunnerConfig,
     shutdown: Option<&AtomicBool>,
-) -> Vec<ShellAgentProjectSummary> {
+) -> Vec<RunnerProjectSummary> {
     // Loaded configs always carry a materialized project_registry_dir; a bare
     // test-built config that cannot derive one reports the error instead of
     // silently scanning a relative path.
@@ -728,7 +728,7 @@ fn load_runner_project_summaries(
 
 impl RunnerProjectCache {
     #[cfg(test)]
-    pub(crate) fn get(&mut self, cfg: &RunnerConfig) -> Vec<ShellAgentProjectSummary> {
+    pub(crate) fn get(&mut self, cfg: &RunnerConfig) -> Vec<RunnerProjectSummary> {
         self.get_with_shutdown(cfg, None)
     }
 
@@ -736,7 +736,7 @@ impl RunnerProjectCache {
         &mut self,
         cfg: &RunnerConfig,
         shutdown: Option<&AtomicBool>,
-    ) -> Vec<ShellAgentProjectSummary> {
+    ) -> Vec<RunnerProjectSummary> {
         if self.refreshed_at.is_some_and(|refreshed_at| {
             refreshed_at.elapsed() < Duration::from_millis(PROJECT_SCAN_CACHE_MS)
         }) {
@@ -851,7 +851,7 @@ fn validate_project_op_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate the project `name`: non-empty after trim, <= 120 chars, no NUL.
+/// Validate the project `name`: non-empty after trim, <= 120 UTF-8 bytes, no NUL.
 fn validate_project_op_name(name: &str) -> Result<(), String> {
     if name.contains('\0') {
         return Err("name must not contain NUL".to_string());
@@ -860,18 +860,18 @@ fn validate_project_op_name(name: &str) -> Result<(), String> {
         return Err("name cannot be empty".to_string());
     }
     if name.len() > 120 {
-        return Err("name must be at most 120 characters".to_string());
+        return Err("name must be at most 120 UTF-8 bytes".to_string());
     }
     Ok(())
 }
 
-/// Validate the optional `description`: <= 500 chars, no NUL.
+/// Validate the optional `description`: <= 500 UTF-8 bytes, no NUL.
 fn validate_project_op_description(desc: &str) -> Result<(), String> {
     if desc.contains('\0') {
         return Err("description must not contain NUL".to_string());
     }
     if desc.len() > 500 {
-        return Err("description must be at most 500 characters".to_string());
+        return Err("description must be at most 500 UTF-8 bytes".to_string());
     }
     Ok(())
 }
@@ -1184,7 +1184,7 @@ fn choose_auto_project_id(
 }
 
 fn path_resolution_success(
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
     project: &RunnerProjectFile,
     canonical_path: &Path,
     outcome: &'static str,
@@ -1216,7 +1216,7 @@ fn path_resolution_success(
 
 fn existing_path_resolution_result(
     start: Instant,
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
     canonical_path: &Path,
     matches: Vec<RunnerProjectFile>,
 ) -> Option<CommandResult> {
@@ -1262,7 +1262,7 @@ fn existing_path_resolution_result(
 pub(crate) fn handle_resolve_or_register_project(
     policy: &RunnerPolicy,
     project_registry_dir: &Path,
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
 ) -> CommandResult {
     let start = Instant::now();
     let _registry_guard = match project_registry_write_lock().lock() {
@@ -1535,7 +1535,7 @@ fn unregister_project_config(path: &Path) -> Result<(), ProjectUnregisterError> 
 pub(crate) fn handle_project_lifecycle_op(
     policy: &RunnerPolicy,
     project_registry_dir: &Path,
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
 ) -> CommandResult {
     let _registry_guard = match project_registry_write_lock().lock() {
         Ok(guard) => guard,
@@ -1703,7 +1703,6 @@ fn matching_existing_project(
 fn validate_recovered_create_side_effects(
     path: &Path,
     template: &str,
-    description: Option<&str>,
     git_init: bool,
 ) -> Result<(), &'static str> {
     if !path.is_dir() {
@@ -1715,9 +1714,6 @@ fn validate_recovered_create_side_effects(
     if template == "basic"
         && (!path.join("README.md").is_file() || !path.join(".gitignore").is_file())
     {
-        return Err("project_already_exists");
-    }
-    if template == "empty" && description.is_some() && !path.join("README.md").is_file() {
         return Err("project_already_exists");
     }
     Ok(())
@@ -1753,7 +1749,7 @@ fn recovered_project_result(
 pub(crate) fn handle_project_op(
     policy: &RunnerPolicy,
     project_registry_dir: &Path,
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
 ) -> CommandResult {
     let _registry_guard = match project_registry_write_lock().lock() {
         Ok(guard) => guard,
@@ -1856,8 +1852,8 @@ pub(crate) fn handle_project_op(
         .get("git_init")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let allow_existing_empty = json
-        .get("allow_existing_empty")
+    let adopt_existing_empty = json
+        .get("adopt_existing_empty")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if kind == "create_project" && template != "empty" && template != "basic" {
@@ -2000,12 +1996,9 @@ pub(crate) fn handle_project_op(
             allow_patch,
         ) {
             Ok(Some(project)) => {
-                if let Err(code) = validate_recovered_create_side_effects(
-                    &path_buf,
-                    &template,
-                    description.as_deref(),
-                    git_init,
-                ) {
+                if let Err(code) =
+                    validate_recovered_create_side_effects(&path_buf, &template, git_init)
+                {
                     return project_error_cmd(start, code);
                 }
                 return ok_cmd(
@@ -2047,8 +2040,8 @@ pub(crate) fn handle_project_op(
         if !is_empty {
             return project_error_cmd(start, "path_not_empty");
         }
-        if !allow_existing_empty {
-            return project_error_cmd(start, "path_not_empty");
+        if !adopt_existing_empty {
+            return project_error_cmd(start, "path_exists");
         }
     } else {
         // Create the directory.
@@ -2079,18 +2072,9 @@ pub(crate) fn handle_project_op(
             created_paths.cleanup();
             return err_cmd(start, format!("failed to write .gitignore: {}", e));
         }
-    } else if template == "empty" {
-        // For empty template, optionally create README.md if description is provided.
-        if let Some(ref desc) = description {
-            let readme = format!("# {}\n\n{}\n", name, desc);
-            let readme_path = path_buf.join("README.md");
-            if let Err(e) = write_created_file(&readme_path, readme.as_bytes(), &mut created_paths)
-            {
-                created_paths.cleanup();
-                return err_cmd(start, format!("failed to write README.md: {}", e));
-            }
-        }
     }
+    // `empty` itself generates no project files. Description stays registration
+    // metadata; `git_init` remains a separate explicit filesystem side effect.
 
     // git init.
     let mut git_initialized = false;

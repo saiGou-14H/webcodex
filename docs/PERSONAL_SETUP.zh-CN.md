@@ -27,6 +27,8 @@ Server 可以在仓库机器本身运行，也可以放在另一台机器。Runn
 
 ## 1. 安装 WebCodex
 
+Windows 或 macOS 用户可以从对应的 [GitHub Release](https://github.com/yyjeqhc/webcodex/releases) 安装 **WebCodex Desktop**。Windows 选择 x64 installer；Mac 按机器架构选择 Intel 或 Apple Silicon DMG。当前 macOS 构建使用 ad-hoc 签名且没有 Apple notarization，因此 Gatekeeper 可能会拦截新下载构建的首次启动。遇到这种情况时，进入**系统设置 → 隐私与安全 → 仍要打开**，再确认**打开**即可；不要全局关闭 Gatekeeper。以后单独下载的新版本仍可能被 macOS 重新评估。Desktop 界面可以完成本机 Server、Runner、Project 和 ChatGPT 连接，包括普通 OpenAI Secure MCP Tunnel 路径。下面的命令行完整路径仍然保留，适合高级配置和排障。
+
 需要 Node.js 18+ 和 Git：
 
 ```bash
@@ -73,7 +75,7 @@ Tunnel 只解决网络可达性。不要为了使用 Tunnel 改成 `webcodex sha
 
 普通公网 HTTPS / Cloudflare 场景中，两条连接通常可以使用同一个 HTTPS Server URL。OpenAI Secure MCP Tunnel 可以不同：Runner 仍然通过 loopback/LAN 连接普通 Server，ChatGPT 单独通过 Tunnel 访问 `/mcp`。
 
-如果你使用 Windows + OpenAI Secure MCP Tunnel，可以参考[Windows + OpenAI Tunnel 深入配置与故障排查](WINDOWS_OPENAI_TUNNEL.zh-CN.md)。那篇文档记录了完整实操和一次真实网络故障，作为需要时再看的深入排障材料即可。
+如果你使用 Windows + OpenAI Secure MCP Tunnel，可以参考[Windows + OpenAI Tunnel 深入配置与故障排查](WINDOWS_OPENAI_TUNNEL.zh-CN.md)。其中当前设置/排障步骤与单独标注的历史验证记录已经分层，作为需要时再看的深入材料即可。
 
 下面用 `<server-url>` 表示 **CLI / Runner 用来访问 Server 的地址**。同机部署可以直接写 `http://127.0.0.1:8080`；已有稳定 HTTPS 时也可以直接使用该 HTTPS URL。
 

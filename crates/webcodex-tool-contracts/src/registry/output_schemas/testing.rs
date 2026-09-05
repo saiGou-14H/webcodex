@@ -1,8 +1,8 @@
 use serde_json::{json, Value};
 
 use super::common::{
-    cargo_test_count_assertion_schema, nullable_schema, permission_decision_schema, schema_type,
-    session_hint_schema,
+    cargo_test_count_assertion_schema, job_activity_schema, nullable_schema, open_object_schema,
+    permission_decision_schema, schema_type, session_hint_schema,
 };
 
 pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
@@ -109,6 +109,7 @@ fn cargo_output_schema(tool_name: &str) -> Value {
                     "description": "Current opaque observation token for the exact public Job snapshot returned by a promoted validation handoff."
                 }),
             ),
+            ("activity", job_activity_schema()),
             (
                 "promoted_to_job",
                 schema_type("boolean", "True only when the validation was promoted to a Job and the same command continues running."),
@@ -128,6 +129,7 @@ fn cargo_output_schema(tool_name: &str) -> Value {
             ("command_ok", schema_type("boolean", "Whether execution completed successfully.")),
             ("tool_failure", schema_type("boolean", "Whether rejection happened before execution.")),
             ("async_handoff_available", schema_type("boolean", "Whether this Runner supports validation Job handoff.")),
+            ("detected_summary", open_object_schema("Current bounded validation/progress summary at the initial durable Job handoff; advisory only and never retry authority.")),
             ("session_hint", session_hint_schema()),
             ("permission", permission_decision_schema()),
     ];
@@ -251,7 +253,7 @@ fn cargo_output_schema(tool_name: &str) -> Value {
                             "project", "command_summary", "cwd", "shell", "executor",
                             "execution_source", "purpose", "promoted_to_job", "terminal",
                             "command_started", "command_completed", "execution_state", "job_id",
-                            "job_status", "observation_token", "effective_timeout_secs", "sync_wait_secs",
+                            "job_status", "observation_token", "activity", "effective_timeout_secs", "sync_wait_secs",
                             "stdout_tail", "stderr_tail", "stdout_lines", "stderr_lines",
                             "stdout_truncated", "stderr_truncated"
                         ],

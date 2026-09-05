@@ -9,18 +9,19 @@ use super::helpers::{
     SYNC_VALIDATION_WAIT_SECS,
 };
 use super::shell::{command_execution_state_name, ProjectCommandOutput};
+use super::structured_execution::structured_job_observation;
 use super::tool_result::ToolResult;
-use super::validation_parser::parse_complete_cargo_test_summary_counts;
 use super::validation_profile::{
     validation_adapter_for_tool, ValidationAdapter, ValidationCommandOptions,
 };
 use super::{ExecutionPurpose, ToolRuntime};
 use crate::auth::AuthContext;
-use crate::shell_client::ShellJobStartMetadata;
-use crate::shell_protocol::{
+use crate::runner_http::ShellJobStartMetadata;
+use crate::runner_protocol::{
     ShellCommandExecutionState, ShellJobOpRequest, ShellJobValidationMetadata,
     ShellJobValidationStep,
 };
+pub(crate) use webcodex_validation::parse_cargo_test_run_metadata;
 
 const CARGO_STDIO_TAIL_CHARS: usize = 12_000;
 const CARGO_VALIDATION_FAILURE_KIND: &str = "validation_failed";
@@ -51,91 +52,6 @@ pub(crate) fn count_rustc_diagnostics(text: &str, prefix: &str) -> usize {
             line.starts_with(prefix) || line.starts_with(&coded_prefix)
         })
         .count()
-}
-
-/// Aggregate passed/failed counts across every Cargo test harness summary line.
-///
-/// Uses the same multi-harness aggregation as diagnostics `test_summary` so
-/// top-level `tests_passed` / `tests_failed` stay consistent when the bounded
-/// tails still contain every summary.
-#[cfg(test)]
-pub(crate) fn parse_cargo_test_counts(text: &str) -> (Option<u64>, Option<u64>) {
-    let metadata = parse_cargo_test_run_metadata(text);
-    (metadata.tests_passed, metadata.tests_failed)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CargoTestRunMetadata {
-    pub(crate) tests_detected: bool,
-    pub(crate) tests_run_count: Option<u64>,
-    pub(crate) tests_passed: Option<u64>,
-    pub(crate) tests_failed: Option<u64>,
-    pub(crate) zero_tests_run: Option<bool>,
-}
-
-pub(crate) fn parse_cargo_test_run_metadata(text: &str) -> CargoTestRunMetadata {
-    let mut tests_run_count = 0_u64;
-    let mut tests_passed = 0_u64;
-    let mut tests_failed = 0_u64;
-    let mut complete_summary_found = false;
-    let mut incomplete_summary_found = false;
-    let mut tests_detected = false;
-
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("running ") {
-            let mut parts = rest.split_whitespace();
-            if parts
-                .next()
-                .is_some_and(|count| count.parse::<u64>().is_ok())
-                && parts
-                    .next()
-                    .is_some_and(|label| label == "test" || label == "tests")
-            {
-                // `running N tests` includes ignored items. It is useful only
-                // as a harness-detection signal, never as executed-count proof.
-                tests_detected = true;
-            }
-        }
-
-        if !line.contains("test result:") {
-            continue;
-        }
-        tests_detected = true;
-        match parse_complete_cargo_test_summary_counts(line) {
-            Some((passed, failed)) => {
-                complete_summary_found = true;
-                tests_passed = tests_passed.saturating_add(passed);
-                tests_failed = tests_failed.saturating_add(failed);
-                tests_run_count = tests_run_count
-                    .saturating_add(passed)
-                    .saturating_add(failed);
-            }
-            None => {
-                // A partial/malformed summary makes the aggregate unproven;
-                // do not promote counts observed in other retained sections.
-                incomplete_summary_found = true;
-            }
-        }
-    }
-
-    if complete_summary_found && !incomplete_summary_found {
-        CargoTestRunMetadata {
-            tests_detected,
-            tests_run_count: Some(tests_run_count),
-            tests_passed: Some(tests_passed),
-            tests_failed: Some(tests_failed),
-            zero_tests_run: Some(tests_run_count == 0),
-        }
-    } else {
-        CargoTestRunMetadata {
-            tests_detected,
-            tests_run_count: None,
-            tests_passed: None,
-            tests_failed: None,
-            zero_tests_run: None,
-        }
-    }
 }
 
 fn is_cargo_validation_failure(output: &ProjectCommandOutput, timeout_secs: u64) -> bool {
@@ -249,11 +165,11 @@ fn resolve_cargo_test_minimum(
     no_run: Option<bool>,
 ) -> Result<Option<u64>, ToolResult> {
     if let Some(minimum) = min_tests {
-        if !(1..=crate::shell_protocol::CARGO_TEST_MIN_TESTS_MAX).contains(&minimum) {
+        if !(1..=crate::runner_protocol::CARGO_TEST_MIN_TESTS_MAX).contains(&minimum) {
             return Err(cargo_test_assertion_rejection(
                 format!(
                     "cargo_test min_tests must be between 1 and {}",
-                    crate::shell_protocol::CARGO_TEST_MIN_TESTS_MAX
+                    crate::runner_protocol::CARGO_TEST_MIN_TESTS_MAX
                 ),
                 "pass a bounded positive min_tests value, or omit it.",
             ));
@@ -335,7 +251,7 @@ impl ToolRuntime {
         let check = check.unwrap_or(false);
         // Both read-only and mutating structured Cargo formatting reject named
         // SSH resources before selecting an execution path. In particular, the
-        // mutating sync path must never fall back to the Agent project root.
+        // mutating sync path must never fall back to the Runner project root.
         if let Some(result) = reject_structured_validation_ssh_resource(ssh_resource) {
             return result;
         }
@@ -849,7 +765,7 @@ impl ToolRuntime {
         auth: Option<&AuthContext>,
     ) -> ToolResult {
         let client_id = config.client_id.clone();
-        let effective_cwd = match super::helpers::resolve_agent_cwd(config, cwd) {
+        let effective_cwd = match super::helpers::resolve_runner_cwd(config, cwd) {
             Ok(cwd) => cwd,
             Err(error) => {
                 return ToolResult::err(command_rejected_message(
@@ -858,7 +774,7 @@ impl ToolRuntime {
                 ))
             }
         };
-        let resolved_cwd = super::helpers::project_relative_agent_cwd(config, &effective_cwd)
+        let resolved_cwd = super::helpers::project_relative_runner_cwd(config, &effective_cwd)
             .unwrap_or_else(|_| ".".to_string());
         let actual_shell = "configured";
         // The validation step is derived from the same options the tool would
@@ -883,9 +799,10 @@ impl ToolRuntime {
                 ))
             }
         };
+        let access = crate::runner_http::runner_access_from_auth(auth);
         let job = match self
-            .shell_clients
-            .start_job_with_metadata_for_auth(
+            .runner_registry
+            .start_job_with_metadata_for_access(
                 ShellJobOpRequest {
                     op: "start".to_string(),
                     client_id: Some(client_id),
@@ -918,7 +835,7 @@ impl ToolRuntime {
                         validation_target_id: validation_target_id.clone(),
                         minimum_tests,
                     }),
-                    visibility: crate::shell_client::ShellJobVisibility::HiddenUntilHandoff,
+                    visibility: crate::runner_http::ShellJobVisibility::HiddenUntilHandoff,
                     validation_identity: None,
                     validation_tool: None,
                     assertion_name: None,
@@ -926,7 +843,8 @@ impl ToolRuntime {
                     stdin: None,
                     detached_idempotency_key: None,
                 },
-                auth,
+                access.as_ref(),
+                None,
             )
             .await
         {
@@ -949,9 +867,9 @@ impl ToolRuntime {
             cwd: resolved_cwd,
             shell: actual_shell.to_string(),
             executor: "agent".to_string(),
-            command_summary: crate::shell_client::command_preview(command),
+            command_summary: crate::runner_http::command_preview(command),
             minimum_tests,
-            auth: auth.cloned(),
+            auth: access,
         };
         self.await_validation_job(job_id, sync_wait_secs, adapter, handoff)
             .await
@@ -976,7 +894,7 @@ impl ToolRuntime {
         handoff: ValidationHandoff,
     ) -> ToolResult {
         let mut guard = ValidationCleanupGuard::new(
-            self.shell_clients.clone(),
+            self.runner_registry.clone(),
             job_id.clone(),
             handoff.auth.clone(),
         );
@@ -989,7 +907,7 @@ impl ToolRuntime {
         let deadline = std::time::Instant::now() + wait;
         loop {
             let status = self
-                .shell_clients
+                .runner_registry
                 .get_hidden_job_for_auth(handoff.auth.as_ref(), &job_id)
                 .await;
             let (terminal, observed_status) = match status {
@@ -1016,7 +934,7 @@ impl ToolRuntime {
         // deadline; promote_hidden_job deliberately leaves such a record hidden
         // so the original Cargo call can still return its structured terminal
         // result instead of handing off an already-finished Job.
-        let promoted = match self.shell_clients.promote_hidden_job(&job_id).await {
+        let promoted = match self.runner_registry.promote_hidden_job(&job_id).await {
             Ok(job) => job,
             Err(error) => {
                 return ToolResult::err(command_rejected_message(
@@ -1033,7 +951,30 @@ impl ToolRuntime {
             guard.disarm();
             return result;
         }
-        let observation_token = match promoted.observation_token {
+        let observation = match structured_job_observation(
+            &self.runner_registry,
+            handoff.auth.as_ref(),
+            &job_id,
+        )
+        .await
+        {
+            Ok(observation) => observation,
+            Err(error) => {
+                return ToolResult::err(command_rejected_message(
+                    error,
+                    "observe the returned Job from list_jobs before deciding whether any retry is safe.",
+                ));
+            }
+        };
+        let latest_status = observation.job.status.clone();
+        if crate::tool_runtime::jobs::is_terminal_job_status(&latest_status) {
+            let result = self
+                .validation_terminal_result(job_id, adapter, &latest_status, handoff)
+                .await;
+            guard.disarm();
+            return result;
+        }
+        let observation_token = match observation.job.observation_token.clone() {
             Some(token) => token,
             None => {
                 return ToolResult::err(
@@ -1041,11 +982,19 @@ impl ToolRuntime {
                 );
             }
         };
-        let queued = matches!(
+        let (execution_state, command_started) = validation_handoff_execution_state(
             latest_status.as_str(),
-            "queued" | "agent_queued" | "started"
+            observation.job.started_at.is_some(),
         );
-        let execution_state = if queued { "queued" } else { "running" };
+        let detected_summary = crate::tool_runtime::jobs::detected_job_summary_with_activity(
+            Some(&handoff.command_summary),
+            Some(&handoff.purpose),
+            &latest_status,
+            observation.job.exit_code.map(i64::from),
+            &observation.stdout_tail,
+            &observation.stderr_tail,
+            observation.job.activity.as_ref(),
+        );
         let payload = json!({
             "execution_source": handoff.execution_source,
             "purpose": handoff.purpose,
@@ -1053,8 +1002,9 @@ impl ToolRuntime {
             "job_id": handoff.job_id,
             "job_status": latest_status,
             "observation_token": observation_token,
+            "activity": observation.job.activity,
             "promoted_to_job": true,
-            "command_started": !queued,
+            "command_started": command_started,
             "command_completed": false,
             "effective_timeout_secs": handoff.effective_timeout_secs,
             "sync_wait_secs": handoff.sync_wait_secs,
@@ -1063,12 +1013,13 @@ impl ToolRuntime {
             "shell": handoff.shell,
             "executor": handoff.executor,
             "command_summary": handoff.command_summary,
-            "stdout_tail": "",
-            "stderr_tail": "",
-            "stdout_lines": 0,
-            "stderr_lines": 0,
-            "stdout_truncated": false,
-            "stderr_truncated": false,
+            "stdout_tail": observation.stdout_tail,
+            "stderr_tail": observation.stderr_tail,
+            "stdout_lines": observation.stdout_lines,
+            "stderr_lines": observation.stderr_lines,
+            "stdout_truncated": observation.stdout_truncated,
+            "stderr_truncated": observation.stderr_truncated,
+            "detected_summary": detected_summary,
             "terminal": false,
         });
         guard.disarm();
@@ -1084,7 +1035,7 @@ impl ToolRuntime {
         handoff: ValidationHandoff,
     ) -> ToolResult {
         let log = self
-            .shell_clients
+            .runner_registry
             .hidden_job_log_for_auth(handoff.auth.as_ref(), &job_id, Some(200))
             .await;
         let (job, stdout, stderr, stdout_source_truncated, stderr_source_truncated) = match log {
@@ -1158,7 +1109,7 @@ impl ToolRuntime {
         if validation_passed {
             // Discard the hidden Job record so a fast validation never leaves a
             // redundant visible job in list_jobs.
-            self.shell_clients
+            self.runner_registry
                 .remove_projected_hidden_terminal_job_record(&job_id)
                 .await;
             ToolResult::ok(payload)
@@ -1188,7 +1139,7 @@ impl ToolRuntime {
                     }
                 }),
             };
-            self.shell_clients
+            self.runner_registry
                 .remove_projected_hidden_terminal_job_record(&job_id)
                 .await;
             result
@@ -1223,8 +1174,8 @@ impl ToolRuntime {
         let process_passed =
             execution_state == ShellCommandExecutionState::Completed && output.exit_code == Some(0);
         let validation_failed = is_cargo_validation_failure(&output, timeout_secs);
-        let resolved_cwd = super::helpers::resolve_agent_cwd(config, cwd)
-            .and_then(|path| super::helpers::project_relative_agent_cwd(config, &path))
+        let resolved_cwd = super::helpers::resolve_runner_cwd(config, cwd)
+            .and_then(|path| super::helpers::project_relative_runner_cwd(config, &path))
             .unwrap_or_else(|_| ".".to_string());
         let shell = "configured";
         let executor = "agent";
@@ -1235,7 +1186,7 @@ impl ToolRuntime {
         };
         let mut payload = json!({
             "project": project,
-            "command_summary": crate::shell_client::command_preview(command),
+            "command_summary": crate::runner_http::command_preview(command),
             "cwd": resolved_cwd,
             "shell": shell,
             "executor": executor,
@@ -1434,7 +1385,7 @@ struct ValidationHandoff {
     executor: String,
     command_summary: String,
     minimum_tests: Option<u64>,
-    auth: Option<AuthContext>,
+    auth: Option<webcodex_runner_registry::RunnerAccess>,
 }
 
 /// Build the canonical structured validation step for a read-only validation tool
@@ -1473,7 +1424,8 @@ fn validation_step(
                 // Whitespace-only filter means "no filter", matching the
                 // synchronous path. Option-like filters are rejected by the
                 // shared filter contract before any argv is built.
-                if let Some(normalized) = crate::shell_protocol::normalize_rust_test_filter(filter)?
+                if let Some(normalized) =
+                    crate::runner_protocol::normalize_rust_test_filter(filter)?
                 {
                     args.push(normalized);
                 }
@@ -1496,7 +1448,7 @@ fn validation_step(
         }
         "go_test" => {
             let packages =
-                crate::shell_protocol::normalize_go_test_packages(options.go_packages.as_deref())
+                crate::runner_protocol::normalize_go_test_packages(options.go_packages.as_deref())
                     .map_err(|reason| format!("packages {reason}"))?;
             let mut args = vec!["test".to_string(), "-json".to_string()];
             args.extend(packages);
@@ -1526,7 +1478,7 @@ fn push_paired_arg(args: &mut Vec<String>, flag: &str, value: Option<&str>) -> R
     let Some(value) = value else {
         return Ok(());
     };
-    let Some(normalized) = crate::shell_protocol::normalize_cargo_value(value)? else {
+    let Some(normalized) = crate::runner_protocol::normalize_cargo_value(value)? else {
         return Ok(());
     };
     args.push(flag.to_string());
@@ -1565,17 +1517,17 @@ fn apply_validation_projection_fields(payload: &mut Value, projection: &Value) {
 /// Once the tool has produced a terminal result or public handoff, the guard is
 /// disarmed.
 struct ValidationCleanupGuard {
-    clients: std::sync::Arc<crate::shell_client::ShellClientRegistry>,
+    clients: std::sync::Arc<crate::runner_http::RunnerRegistry>,
     job_id: String,
-    auth: Option<AuthContext>,
+    auth: Option<webcodex_runner_registry::RunnerAccess>,
     armed: bool,
 }
 
 impl ValidationCleanupGuard {
     fn new(
-        clients: std::sync::Arc<crate::shell_client::ShellClientRegistry>,
+        clients: std::sync::Arc<crate::runner_http::RunnerRegistry>,
         job_id: String,
-        auth: Option<AuthContext>,
+        auth: Option<webcodex_runner_registry::RunnerAccess>,
     ) -> Self {
         Self {
             clients,
@@ -1611,6 +1563,40 @@ impl Drop for ValidationCleanupGuard {
     }
 }
 
+fn validation_handoff_execution_state(status: &str, started: bool) -> (&'static str, bool) {
+    let pending_status = matches!(status, "queued" | "agent_queued" | "started");
+    let command_started = !pending_status || started;
+    (
+        if command_started { "running" } else { "queued" },
+        command_started,
+    )
+}
+
+#[cfg(test)]
+mod validation_handoff_projection_tests {
+    use super::validation_handoff_execution_state;
+
+    #[test]
+    fn fresh_started_evidence_prevents_false_queued_validation_handoff() {
+        assert_eq!(
+            validation_handoff_execution_state("agent_queued", false),
+            ("queued", false)
+        );
+        assert_eq!(
+            validation_handoff_execution_state("agent_queued", true),
+            ("running", true)
+        );
+        assert_eq!(
+            validation_handoff_execution_state("started", true),
+            ("running", true)
+        );
+        assert_eq!(
+            validation_handoff_execution_state("running", true),
+            ("running", true)
+        );
+    }
+}
+
 #[cfg(test)]
 mod structured_cargo_arg_parity_tests {
     use super::*;
@@ -1638,7 +1624,7 @@ mod structured_cargo_arg_parity_tests {
             resolve_cargo_test_minimum(None, Some(0), None),
             resolve_cargo_test_minimum(
                 None,
-                Some(crate::shell_protocol::CARGO_TEST_MIN_TESTS_MAX + 1),
+                Some(crate::runner_protocol::CARGO_TEST_MIN_TESTS_MAX + 1),
                 None,
             ),
             resolve_cargo_test_minimum(Some(true), None, Some(true)),
@@ -1784,7 +1770,7 @@ mod structured_cargo_arg_parity_tests {
             (
                 "cargo_check",
                 ValidationCommandOptions {
-                    features: Some("a".repeat(crate::shell_protocol::CARGO_VALUE_MAX_BYTES + 1)),
+                    features: Some("a".repeat(crate::runner_protocol::CARGO_VALUE_MAX_BYTES + 1)),
                     ..ValidationCommandOptions::default()
                 },
             ),

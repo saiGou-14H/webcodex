@@ -23,11 +23,11 @@ pub use webcodex_core::authority::{
     SCOPE_COMPUTER_CLIPBOARD_READ, SCOPE_COMPUTER_CLIPBOARD_WRITE, SCOPE_COMPUTER_CONTROL,
     SCOPE_COMPUTER_DISPLAY_READ, SCOPE_COMPUTER_LAUNCH, SCOPE_COMPUTER_POINTER_CONTROL,
     SCOPE_COMPUTER_READ, SCOPE_JOB_DETACH, SCOPE_JOB_RUN, SCOPE_MCP_LOCAL, SCOPE_MEMORY_MANAGE,
-    SCOPE_MEMORY_READ, SCOPE_PROJECT_READ, SCOPE_PROJECT_WRITE, SCOPE_RUNTIME_READ,
-    SCOPE_SESSION_COLLABORATE,
+    SCOPE_MEMORY_READ, SCOPE_PLUGIN_LOCAL, SCOPE_PROJECT_READ, SCOPE_PROJECT_WRITE,
+    SCOPE_RUNTIME_READ, SCOPE_SESSION_COLLABORATE,
 };
 
-/// True when `scope` is one of the agent transport scopes.
+/// True when `scope` is one of the Runner transport scopes.
 pub(crate) fn is_agent_scope(scope: &str) -> bool {
     AGENT_SCOPES.contains(&scope)
 }
@@ -36,7 +36,7 @@ pub(crate) fn is_agent_scope(scope: &str) -> bool {
 // Scope validation
 // ---------------------------------------------------------------------------
 
-/// Validate and normalize a list of agent transport scopes. Returns an error
+/// Validate and normalize a list of Runner transport scopes. Returns an error
 /// if any scope is not an `agent:*` scope. Rejects duplicates and unknown
 /// scopes.
 pub(crate) fn validate_agent_scopes(scopes: &[String]) -> Result<Vec<String>, String> {
@@ -161,7 +161,7 @@ pub(crate) fn enforce_route_scope(
                 ))
             }
         }
-        // Agent transport identity and exact agent:* scopes are enforced by the
+        // Runner transport identity and exact agent:* scopes are enforced by the
         // dedicated surface gate and transport handlers. Do not reinterpret
         // those credentials as ordinary runtime principals here.
         OAuthRouteScopePolicy::AgentSurface => Ok(()),
@@ -267,6 +267,7 @@ mod tests {
         for (method, path) in [
             ("POST", "/api/pairing/enroll"),
             ("POST", "/api/shell/agent/register"),
+            ("POST", "/api/shell/agent/offline"),
             ("POST", "/api/shell/agent/poll"),
             ("POST", "/api/shell/agent/result"),
             ("POST", "/api/shell/agent/persistent_shell_result"),

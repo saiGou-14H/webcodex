@@ -1,7 +1,7 @@
 use super::config::RunnerPolicy;
 use super::files::{resolve_requested_path, sha256_hex_bytes};
 use super::output::{line_edit_stdout, CommandResult};
-use crate::shell_protocol::ShellAgentShellRequest;
+use crate::runner_protocol::RunnerRequest;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::io::Write;
@@ -91,7 +91,7 @@ fn write_file_atomic(path: &Path, content: &str) -> Result<(), String> {
     write_file_atomic_strict(path, content, ".pd-line")
 }
 
-fn parse_json_payload(request: &ShellAgentShellRequest) -> Result<serde_json::Value, String> {
+fn parse_json_payload(request: &RunnerRequest) -> Result<serde_json::Value, String> {
     serde_json::from_str(request.content.as_deref().unwrap_or_default())
         .map_err(|e| format!("invalid json: {}", e))
 }
@@ -159,7 +159,7 @@ fn write_project_file_apply_error(
 }
 
 pub(crate) fn handle_write_project_file_request(
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
     resolved: &Path,
     start: Instant,
 ) -> CommandResult {
@@ -1145,7 +1145,7 @@ fn execute_planned_file_changes(
 
 fn resolve_unique_patch_path(
     policy: &RunnerPolicy,
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
     touched: &mut HashSet<PathBuf>,
     index: usize,
     kind: &str,
@@ -1240,6 +1240,7 @@ fn apply_patch_strict_match_rejection(
     matched: &CodexPatchChunkMatch,
     start: Instant,
 ) -> CommandResult {
+    let rejection = matched.strict_rejection;
     line_edit_stdout(
         serde_json::json!({
             "changed": false,
@@ -1249,13 +1250,15 @@ fn apply_patch_strict_match_rejection(
             "change_index": index,
             "path": path,
             "chunk_index": matched.chunk_index,
-            "match_mode": matched.match_mode.map(|mode| mode.as_str()),
-            "match_source": matched.match_source.as_str(),
-            "matched_start_line": matched.matched_start_line,
-            "candidate_count": matched.candidate_count,
+            "match_mode": rejection.map(|fact| fact.match_mode.as_str()),
+            "match_source": rejection.map(|fact| fact.match_source.as_str()),
+            "matched_start_line": rejection.map(|fact| fact.matched_start_line),
+            "candidate_count": rejection.map(|fact| fact.candidate_count),
+            "search_start_line": rejection.map(|fact| fact.search_start_line),
+            "source_line_count": rejection.map(|fact| fact.source_line_count),
             "strict_match": false,
-            "recovery_action": "refine_patch_or_relax_strict_matching",
-            "retry_guidance": "add exact unique context and retry strict_matching=true; use strict_matching=false only when ordinary Codex fuzzy/first-match positioning is acceptable",
+            "recovery_action": "refine_strict_patch",
+            "retry_guidance": "add exact unique context and retry with strict_matching=true; do not relax strict matching to recover from this rejection",
             "error": format!(
                 "Rejected strict Codex patch before write: {path} chunk {} was not positioned by exact unique matching. No files were modified.",
                 matched.chunk_index
@@ -1267,7 +1270,7 @@ fn apply_patch_strict_match_rejection(
 
 pub(crate) fn handle_apply_patch_file_request(
     policy: &RunnerPolicy,
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
     start: Instant,
 ) -> CommandResult {
     let payload: ApplyPatchPayload =
@@ -1529,7 +1532,7 @@ pub(crate) fn handle_apply_patch_file_request(
 
 pub(crate) fn handle_apply_text_edits_file_request(
     policy: &RunnerPolicy,
-    request: &ShellAgentShellRequest,
+    request: &RunnerRequest,
     start: Instant,
 ) -> CommandResult {
     let payload: ApplyTextEditsPayload =

@@ -1,23 +1,23 @@
 use serde_json::json;
 use std::time::Duration;
 
-use super::helpers::{command_rejected_message, project_relative_agent_cwd, resolve_agent_cwd};
+use super::helpers::{command_rejected_message, project_relative_runner_cwd, resolve_runner_cwd};
 use super::process::{
     add_structured_continuation_facts, classify_process_failure, command_failure_result,
     outcome_unknown_result, process_tool_failure_result, success_output,
     terminal_structured_job_result,
 };
-use super::shell::{agent_command_lifecycle, dispatch_uncertainty_lifecycle};
+use super::shell::{dispatch_uncertainty_lifecycle, runner_command_lifecycle};
 use super::structured_execution::{
     await_hidden_structured_job, HiddenStructuredJobWait, StructuredExecutionBudget,
 };
 use super::tool_audit::{assertion_validation_identity, run_script_validation_identity};
 use super::{ExecutionPurpose, ToolResult, ToolRuntime};
 use crate::auth::AuthContext;
-use crate::shell_client::{
+use crate::runner_http::{
     script_preview, ShellJobStartMetadata, ShellJobVisibility, StructuredJobExecution,
 };
-use crate::shell_protocol::{
+use crate::runner_protocol::{
     validate_script_request, ShellCommandExecutionState, ShellJobOpRequest, ShellScriptLanguage,
     ShellScriptPayload,
 };
@@ -128,7 +128,7 @@ impl ToolRuntime {
             }
         };
         let client_id = proj.client_id.clone();
-        let effective_cwd = match resolve_agent_cwd(&proj, cwd.as_deref()) {
+        let effective_cwd = match resolve_runner_cwd(&proj, cwd.as_deref()) {
                 Ok(cwd) => cwd,
                 Err(error) => {
                     return process_tool_failure_result(
@@ -142,14 +142,14 @@ impl ToolRuntime {
                 }
             };
         let resolved_cwd =
-            project_relative_agent_cwd(&proj, &effective_cwd).unwrap_or_else(|_| ".".to_string());
+            project_relative_runner_cwd(&proj, &effective_cwd).unwrap_or_else(|_| ".".to_string());
         // Generation-2 admission guarantees async typed structured Jobs;
         // sync_wait_secs now controls projection timing, not Runner compatibility.
         let async_handoff_available = true;
         if async_handoff_available && timeout > budget.sync_wait_secs {
             let job = self
-                .shell_clients
-                .start_job_with_metadata_for_auth(
+                .runner_registry
+                .start_job_with_metadata_for_access(
                     ShellJobOpRequest {
                         op: "start".to_string(),
                         client_id: Some(client_id),
@@ -185,7 +185,8 @@ impl ToolRuntime {
                         stdin,
                         ..Default::default()
                     },
-                    auth,
+                    crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                    None,
                 )
                 .await;
             let job = match job {
@@ -220,7 +221,7 @@ impl ToolRuntime {
                 .structured_execution_sync_wait
                 .min(Duration::from_secs(budget.sync_wait_secs));
             let handoff = await_hidden_structured_job(
-                self.shell_clients.clone(),
+                self.runner_registry.clone(),
                 job.job_id.clone(),
                 wait,
                 auth.cloned(),
@@ -233,38 +234,52 @@ impl ToolRuntime {
                     stderr,
                 }) => {
                     let result = terminal_structured_job_result(&job, stdout, stderr, timeout);
-                    self.shell_clients
+                    self.runner_registry
                         .remove_projected_hidden_structured_job_record(&job.job_id)
                         .await;
                     result
                 }
                 Ok(HiddenStructuredJobWait::Continued {
-                    job,
+                    observation,
                     execution_state,
                     command_started,
-                }) => ToolResult::ok(json!({
-                    "execution_state": execution_state,
-                    "command_started": command_started,
-                    "command_completed": false,
-                    "command_ok": false,
-                    "exit_code": null,
-                    "failure_kind": null,
-                    "tool_failure": false,
-                    "promoted_to_job": true,
-                    "terminal": false,
-                    "job_id": job.job_id,
-                    "job_status": job.status,
-                    "observation_token": job.observation_token,
-                    "effective_timeout_secs": timeout,
-                    "sync_wait_secs": budget.sync_wait_secs,
-                    "async_handoff_available": true,
-                    "stdout_tail": "",
-                    "stderr_tail": "",
-                    "stdout_lines": 0,
-                    "stderr_lines": 0,
-                    "stdout_truncated": false,
-                    "stderr_truncated": false,
-                })),
+                }) => {
+                    let detected_summary =
+                        crate::tool_runtime::jobs::detected_job_summary_with_activity(
+                            Some(&summary),
+                            Some(declared_purpose.as_str()),
+                            &observation.job.status,
+                            observation.job.exit_code.map(i64::from),
+                            &observation.stdout_tail,
+                            &observation.stderr_tail,
+                            observation.job.activity.as_ref(),
+                        );
+                    ToolResult::ok(json!({
+                        "execution_state": execution_state,
+                        "command_started": command_started,
+                        "command_completed": false,
+                        "command_ok": false,
+                        "exit_code": null,
+                        "failure_kind": null,
+                        "tool_failure": false,
+                        "promoted_to_job": true,
+                        "terminal": false,
+                        "job_id": observation.job.job_id,
+                        "job_status": observation.job.status,
+                        "observation_token": observation.job.observation_token,
+                        "activity": observation.job.activity,
+                        "effective_timeout_secs": timeout,
+                        "sync_wait_secs": budget.sync_wait_secs,
+                        "async_handoff_available": true,
+                        "stdout_tail": observation.stdout_tail,
+                        "stderr_tail": observation.stderr_tail,
+                        "stdout_lines": observation.stdout_lines,
+                        "stderr_lines": observation.stderr_lines,
+                        "stdout_truncated": observation.stdout_truncated,
+                        "stderr_truncated": observation.stderr_truncated,
+                        "detected_summary": detected_summary,
+                    }))
+                }
                 Err(error) => outcome_unknown_result(format!(
                     "the durable script Job could not be observed during handoff: {error}"
                 )),
@@ -289,7 +304,7 @@ impl ToolRuntime {
         }
         let wait_timeout = timeout;
         let (request_id, receiver) = match self
-                .shell_clients
+                .runner_registry
                 .enqueue_script(
                     client_id,
                     Some(effective_cwd),
@@ -317,7 +332,7 @@ impl ToolRuntime {
             .await
         {
             Ok(Ok(response)) => {
-                let state = agent_command_lifecycle(&response, timeout);
+                let state = runner_command_lifecycle(&response, timeout);
                 let exit_code = response.exit_code;
                 let stdout = response.stdout.unwrap_or_default();
                 let stderr = response.stderr.unwrap_or_default();
@@ -367,7 +382,7 @@ impl ToolRuntime {
             }
             Ok(Err(_)) => {
                 let dispatch = self
-                    .shell_clients
+                    .runner_registry
                     .cancel_request_dispatch_state(&request_id)
                     .await;
                 if dispatch == Some(false) {
@@ -387,7 +402,7 @@ impl ToolRuntime {
             }
             Err(_) => {
                 let dispatch = self
-                    .shell_clients
+                    .runner_registry
                     .cancel_request_dispatch_state(&request_id)
                     .await;
                 let state = dispatch_uncertainty_lifecycle(dispatch);

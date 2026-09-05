@@ -1,14 +1,15 @@
 use super::coding_agent::CodingAgentManager;
 use super::external_tools::ExternalToolRouter;
 use super::mcp_gateway::McpGatewayManager;
+use super::plugin::PluginManager;
 use super::shutdown::lock_unpoison;
 use crate::runner_config::{
     effective_allowed_roots, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_TIMEOUT_SECS,
-    DEFAULT_POLL_INTERVAL_MS, TRANSPORT_AUTO, TRANSPORT_POLLING, TRANSPORT_QUIC,
-    TRANSPORT_WEBSOCKET,
+    DEFAULT_POLL_INTERVAL_MS, MAX_POLL_INTERVAL_MS, TRANSPORT_AUTO, TRANSPORT_POLLING,
+    TRANSPORT_QUIC, TRANSPORT_WEBSOCKET,
 };
-use crate::shell_protocol::{
-    AgentConfigReloadStatus, AgentHostContext, ShellClientCapabilities, RUNNER_JOB_CONCURRENCY_MAX,
+use crate::runner_protocol::{
+    RunnerCapabilities, RunnerConfigReloadStatus, RunnerHostContext, RUNNER_JOB_CONCURRENCY_MAX,
     RUNNER_JOB_CONCURRENCY_MIN,
 };
 use serde::Deserialize;
@@ -51,7 +52,7 @@ pub(crate) struct RunnerConfig {
     /// Stable, bounded planning context for this host. This is registration
     /// metadata only and never changes Runner authority or capability.
     #[serde(default)]
-    pub(crate) host_context: Option<AgentHostContext>,
+    pub(crate) host_context: Option<RunnerHostContext>,
     #[serde(default)]
     pub(crate) project_registry_dir: Option<PathBuf>,
     /// Legacy config spelling retained only for load-time compatibility. A
@@ -64,10 +65,12 @@ pub(crate) struct RunnerConfig {
     /// former path shape, reports the deprecation, and clears this inert field.
     #[serde(default, rename = "temporary_projects_root")]
     pub(crate) deprecated_temporary_projects_root: Option<PathBuf>,
+    /// Minimum delay after an empty polling response. Repeated idle polls back
+    /// off through the built-in schedule while never going below this value.
     #[serde(default = "default_poll_interval_ms")]
     pub(crate) poll_interval_ms: u64,
     #[serde(default)]
-    pub(crate) capabilities: Option<ShellClientCapabilities>,
+    pub(crate) capabilities: Option<RunnerCapabilities>,
     #[serde(default)]
     pub(crate) max_concurrent_jobs: Option<usize>,
     #[serde(default)]
@@ -96,6 +99,11 @@ pub(crate) struct RunnerConfig {
     /// built-in MCP gateway. The public config section is `[mcp]`.
     #[serde(default, rename = "mcp")]
     pub(crate) mcp_gateway: McpGatewayConfig,
+    /// Runner-local native stdio Tool Plugins. Startup admission is frozen for
+    /// this Runner process; explicit plugin reloads use the same section only
+    /// for the dynamic overlay.
+    #[serde(default)]
+    pub(crate) plugins: PluginConfig,
     /// Startup/restart-owned ACP coding-agent providers. This is independent
     /// from MCP tool providers and never accepts caller-controlled executable/env.
     #[serde(default)]
@@ -197,6 +205,45 @@ impl Default for McpGatewayConfig {
     }
 }
 
+pub(crate) const PLUGIN_MAX_COMMAND_BYTES: usize = 1_024;
+pub(crate) const PLUGIN_MAX_CWD_BYTES: usize = 4_096;
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub(crate) struct PluginConfig {
+    #[serde(default = "default_plugin_request_timeout_secs")]
+    pub(crate) request_timeout_secs: u64,
+    #[serde(default)]
+    pub(crate) providers: Vec<PluginProviderConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub(crate) struct PluginProviderConfig {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) command: String,
+    #[serde(default)]
+    pub(crate) args: Vec<String>,
+    #[serde(default)]
+    pub(crate) cwd: Option<String>,
+    #[serde(default)]
+    pub(crate) profile: Option<String>,
+    #[serde(default)]
+    pub(crate) timeout_secs: Option<u64>,
+}
+
+fn default_plugin_request_timeout_secs() -> u64 {
+    30
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            request_timeout_secs: default_plugin_request_timeout_secs(),
+            providers: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ToolProviderStrategy {
@@ -240,7 +287,7 @@ impl Default for ClaudeCodeMcpConfig {
 /// fields are required when `transport = "quic"`; `run_quic_runner` validates
 /// them before connecting. The token is NOT stored here — it stays in the
 /// top-level `RunnerConfig.token`. QUIC encodes that credential only in its v1
-/// transport-specific first-register frame; it never enters `AgentEnvelope`.
+/// transport-specific first-register frame; it never enters `RunnerEnvelope`.
 /// WebSocket and polling continue to use `Authorization: Bearer`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub(crate) struct QuicClientConfig {
@@ -266,7 +313,7 @@ pub(crate) struct QuicClientConfig {
 pub(crate) const MAX_QUIC_KEEPALIVE_INTERVAL_SECS: u64 = 25;
 
 pub(crate) fn default_quic_alpn() -> String {
-    crate::shell_protocol::AGENT_QUIC_ALPN_V1.to_string()
+    crate::runner_protocol::RUNNER_QUIC_ALPN_V1.to_string()
 }
 pub(crate) fn default_quic_connect_timeout_secs() -> u64 {
     10
@@ -441,11 +488,11 @@ pub(crate) struct HotRunnerConfig {
     pub(crate) shell: ShellConfig,
     pub(crate) ssh: SshConfig,
     pub(crate) external_tools: Arc<ExternalToolRouter>,
-    reload_status: Mutex<AgentConfigReloadStatus>,
+    reload_status: Mutex<RunnerConfigReloadStatus>,
 }
 
 impl HotRunnerConfig {
-    fn new(generation: u64, cfg: &RunnerConfig, status: AgentConfigReloadStatus) -> Self {
+    fn new(generation: u64, cfg: &RunnerConfig, status: RunnerConfigReloadStatus) -> Self {
         Self {
             generation,
             policy: cfg.policy.clone(),
@@ -456,7 +503,7 @@ impl HotRunnerConfig {
         }
     }
 
-    pub(crate) fn reload_status(&self) -> AgentConfigReloadStatus {
+    pub(crate) fn reload_status(&self) -> RunnerConfigReloadStatus {
         self.reload_status.lock().unwrap().clone()
     }
 }
@@ -464,11 +511,10 @@ impl HotRunnerConfig {
 pub(crate) struct ReloadableRunnerConfig {
     startup: RunnerConfig,
     mcp_gateway: Arc<McpGatewayManager>,
+    plugins: Arc<PluginManager>,
     coding_agents: Option<Arc<CodingAgentManager>>,
-    /// Config file path used by `reload()`. Config reload is a Unix feature
-    /// (Windows marks reload as unsupported and never stores the path), but
-    /// the reload logic is exercised by cross-platform tests.
-    #[cfg(any(unix, test))]
+    /// Runner-owned config path. General hot reload remains Unix-only, while
+    /// native Plugin dynamic reload is explicitly cross-platform.
     path: PathBuf,
     current: RwLock<Arc<HotRunnerConfig>>,
     external_routers: Mutex<Vec<Weak<ExternalToolRouter>>>,
@@ -477,13 +523,11 @@ pub(crate) struct ReloadableRunnerConfig {
 
 impl ReloadableRunnerConfig {
     pub(crate) fn new(startup: RunnerConfig, path: PathBuf) -> Self {
-        let mut status = AgentConfigReloadStatus::default();
+        let mut status = RunnerConfigReloadStatus::default();
         if !cfg!(unix) {
             status.last_reload_result = "unsupported".to_string();
             status.last_reload_error_code = Some("reload_unsupported".to_string());
         }
-        #[cfg(not(any(unix, test)))]
-        let _ = &path;
         let current = Arc::new(HotRunnerConfig::new(1, &startup, status));
         let external_routers = vec![Arc::downgrade(&current.external_tools)];
         let coding_agents = if startup.acp.agents.is_empty() {
@@ -499,9 +543,9 @@ impl ReloadableRunnerConfig {
         };
         Self {
             mcp_gateway: Arc::new(McpGatewayManager::new(&startup.mcp_gateway)),
+            plugins: Arc::new(PluginManager::new(&startup, path.clone())),
             coding_agents,
             startup,
-            #[cfg(any(unix, test))]
             path,
             current: RwLock::new(current),
             external_routers: Mutex::new(external_routers),
@@ -520,6 +564,7 @@ impl ReloadableRunnerConfig {
     pub(crate) fn begin_shutdown(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         self.mcp_gateway.shutdown();
+        self.plugins.shutdown();
         if let Some(manager) = &self.coding_agents {
             manager.stop_accepting();
         }
@@ -531,6 +576,10 @@ impl ReloadableRunnerConfig {
 
     pub(crate) fn mcp_gateway(&self) -> &McpGatewayManager {
         &self.mcp_gateway
+    }
+
+    pub(crate) fn plugins(&self) -> &PluginManager {
+        &self.plugins
     }
 
     pub(crate) fn coding_agents(&self) -> Option<&Arc<CodingAgentManager>> {
@@ -558,7 +607,7 @@ impl ReloadableRunnerConfig {
     }
 
     #[cfg(any(unix, test))]
-    pub(crate) fn reload(&self) -> AgentConfigReloadStatus {
+    pub(crate) fn reload(&self) -> RunnerConfigReloadStatus {
         if self.is_stopping() {
             return self.snapshot().reload_status();
         }
@@ -590,7 +639,7 @@ impl ReloadableRunnerConfig {
         let active = self.snapshot();
         let generation = active.generation.saturating_add(1);
         let restart_required_fields = restart_required_fields(&self.startup, &candidate);
-        let status = AgentConfigReloadStatus {
+        let status = RunnerConfigReloadStatus {
             generation,
             last_reload_result: if restart_required_fields.is_empty() {
                 "success"
@@ -700,6 +749,7 @@ pub(crate) fn restart_required_fields(
         max_concurrent_jobs,
         acp,
         mcp_gateway,
+        plugins,
         owner,
         poll_interval_ms,
         project_registry_dir,
@@ -1169,6 +1219,19 @@ pub(crate) fn load_config(path: &Path) -> Result<RunnerConfig, String> {
             return Err("transport must be websocket, polling, quic, or auto".to_string());
         }
     }
+    let effective_transport = cfg
+        .transport
+        .as_deref()
+        .map(str::trim)
+        .filter(|transport| !transport.is_empty())
+        .unwrap_or(TRANSPORT_WEBSOCKET);
+    if matches!(effective_transport, TRANSPORT_POLLING | TRANSPORT_AUTO)
+        && cfg.poll_interval_ms > MAX_POLL_INTERVAL_MS
+    {
+        return Err(format!(
+            "poll_interval_ms must be <= {MAX_POLL_INTERVAL_MS} when polling may be used"
+        ));
+    }
     // When allowed_roots is missing/empty, default to [$HOME] so a
     // minimal Runner config without an explicit policy.allowed_roots still works
     // predictably. If HOME is unavailable and allow_cwd_anywhere is false,
@@ -1210,6 +1273,7 @@ pub(crate) fn load_config(path: &Path) -> Result<RunnerConfig, String> {
         }
     }
     validate_mcp_gateway_config(&cfg.mcp_gateway)?;
+    validate_plugin_config(&cfg.plugins, &cfg.shell)?;
     validate_acp_config(&cfg.acp)?;
     Ok(cfg)
 }
@@ -1474,6 +1538,112 @@ fn validate_mcp_gateway_config(config: &McpGatewayConfig) -> Result<(), String> 
         }
     }
     Ok(())
+}
+
+fn validate_plugin_config(config: &PluginConfig, shell: &ShellConfig) -> Result<(), String> {
+    use std::collections::HashSet;
+    use webcodex_core::plugin::{
+        validate_provider_id, validate_provider_name, PLUGIN_MAX_PROVIDERS,
+    };
+
+    if !(1..=120).contains(&config.request_timeout_secs) {
+        return Err("plugins.request_timeout_secs must be between 1 and 120".to_string());
+    }
+    if config.providers.len() > PLUGIN_MAX_PROVIDERS {
+        return Err(format!(
+            "plugins.providers may contain at most {PLUGIN_MAX_PROVIDERS} entries"
+        ));
+    }
+    let mut ids = HashSet::new();
+    for provider in &config.providers {
+        validate_provider_id(&provider.id)
+            .map_err(|error| format!("plugin provider id is invalid: {error}"))?;
+        validate_provider_name(&provider.name)
+            .map_err(|error| format!("plugin provider name is invalid: {error}"))?;
+        if !ids.insert(provider.id.as_str()) {
+            return Err(format!("duplicate plugin provider id '{}'", provider.id));
+        }
+        if provider.command.trim().is_empty()
+            || provider.command.len() > PLUGIN_MAX_COMMAND_BYTES
+            || provider.command.contains('\0')
+        {
+            return Err(format!(
+                "plugins provider '{}' command must be a non-empty native executable of at most {PLUGIN_MAX_COMMAND_BYTES} bytes",
+                provider.id,
+            ));
+        }
+        if provider.args.len() > 64
+            || provider
+                .args
+                .iter()
+                .any(|arg| arg.len() > 4_096 || arg.contains('\0'))
+            || provider.args.iter().map(String::len).sum::<usize>() > 16 * 1024
+        {
+            return Err(format!(
+                "plugins provider '{}' args exceed bounds",
+                provider.id
+            ));
+        }
+        if provider.cwd.as_ref().is_some_and(|cwd| {
+            cwd.trim().is_empty()
+                || cwd.len() > PLUGIN_MAX_CWD_BYTES
+                || cwd.contains('\0')
+                || !Path::new(cwd).is_absolute()
+        }) {
+            return Err(format!(
+                "plugins provider '{}' cwd must be an absolute path of at most {PLUGIN_MAX_CWD_BYTES} bytes",
+                provider.id
+            ));
+        }
+        if let Some(profile) = provider.profile.as_deref() {
+            if profile.trim().is_empty() || !shell.profiles.contains_key(profile) {
+                return Err(format!(
+                    "plugins provider '{}' profile '{}' is not configured in shell.profiles",
+                    provider.id, profile
+                ));
+            }
+        }
+        let timeout = provider.timeout_secs.unwrap_or(config.request_timeout_secs);
+        if !(1..=120).contains(&timeout) {
+            return Err(format!(
+                "plugins provider '{}' timeout_secs must be between 1 and 120",
+                provider.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod plugin_config_tests {
+    use super::*;
+
+    fn provider() -> PluginProviderConfig {
+        PluginProviderConfig {
+            id: "provider".to_string(),
+            name: "Provider".to_string(),
+            command: "node".to_string(),
+            args: Vec::new(),
+            cwd: None,
+            profile: None,
+            timeout_secs: None,
+        }
+    }
+
+    #[test]
+    fn plugin_command_is_bounded() {
+        let mut oversized = provider();
+        oversized.command = "x".repeat(PLUGIN_MAX_COMMAND_BYTES + 1);
+        assert!(validate_plugin_config(
+            &PluginConfig {
+                request_timeout_secs: 30,
+                providers: vec![oversized],
+            },
+            &ShellConfig::default(),
+        )
+        .unwrap_err()
+        .contains("at most 1024 bytes"));
+    }
 }
 
 #[cfg(test)]

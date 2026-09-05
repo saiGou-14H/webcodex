@@ -36,7 +36,7 @@ pub fn cargo_fmt_input_schema() -> Value {
     // `timeout_secs` stays a synchronous command timeout. Only `check=true`
     // accepts the long read-only budget.
     let mut schema = object_schema(with_optional_session_id(vec![
-        ("project", "string", "Agent-registered project id.", true),
+        ("project", "string", "Runner-registered project id.", true),
         (
             "cwd",
             "string",
@@ -95,7 +95,7 @@ pub fn cargo_fmt_input_schema() -> Value {
 pub fn cargo_check_input_schema() -> Value {
     with_optional_result_expectation(with_validation_timeout_bounds(
         object_schema(with_optional_session_id(vec![
-            ("project", "string", "Agent-registered project id.", true),
+            ("project", "string", "Runner-registered project id.", true),
             (
                 "cwd",
                 "string",
@@ -136,7 +136,7 @@ pub fn cargo_check_input_schema() -> Value {
 pub fn cargo_test_input_schema() -> Value {
     let mut schema = with_validation_timeout_bounds(
         object_schema(with_optional_session_id(vec![
-            ("project", "string", "Agent-registered project id.", true),
+            ("project", "string", "Runner-registered project id.", true),
             (
                 "cwd",
                 "string",
@@ -183,7 +183,7 @@ pub fn cargo_test_input_schema() -> Value {
     );
     schema["properties"]["min_tests"]["minimum"] = json!(1);
     schema["properties"]["min_tests"]["maximum"] =
-        json!(webcodex_core::shell_protocol::CARGO_TEST_MIN_TESTS_MAX);
+        json!(webcodex_core::runner_protocol::CARGO_TEST_MIN_TESTS_MAX);
     schema["allOf"] = json!([{
         "if": {
             "properties": { "no_run": { "const": true } },
@@ -202,7 +202,7 @@ pub fn cargo_test_input_schema() -> Value {
 pub fn go_test_input_schema() -> Value {
     let mut schema = with_validation_timeout_bounds(
         object_schema(with_optional_session_id(vec![
-            ("project", "string", "Agent-registered project id.", true),
+            ("project", "string", "Runner-registered project id.", true),
             (
                 "cwd",
                 "string",
@@ -226,9 +226,9 @@ pub fn go_test_input_schema() -> Value {
     );
     schema["properties"]["packages"]["minItems"] = json!(1);
     schema["properties"]["packages"]["maxItems"] =
-        json!(webcodex_core::shell_protocol::GO_TEST_PACKAGE_MAX_ITEMS);
+        json!(webcodex_core::runner_protocol::GO_TEST_PACKAGE_MAX_ITEMS);
     schema["properties"]["packages"]["items"]["minLength"] = json!(1);
     schema["properties"]["packages"]["items"]["maxLength"] =
-        json!(webcodex_core::shell_protocol::GO_TEST_PACKAGE_MAX_BYTES);
+        json!(webcodex_core::runner_protocol::GO_TEST_PACKAGE_MAX_BYTES);
     with_optional_result_expectation(schema)
 }

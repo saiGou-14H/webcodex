@@ -4,10 +4,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::helpers::{bounded_tail, decode_git_quoted_path};
-use super::shell::{agent_command_lifecycle, dispatch_uncertainty_lifecycle};
+use super::shell::{dispatch_uncertainty_lifecycle, runner_command_lifecycle};
 use super::tool_result::ToolResult;
 use super::ToolRuntime;
-use crate::shell_protocol::{ShellCommandExecutionState, ShellRunRequest, ShellRunResponse};
+use crate::runner_protocol::{ShellCommandExecutionState, ShellRunRequest, ShellRunResponse};
 
 pub(crate) use webcodex_core::runtime_contract::MAX_UNIFIED_DIFF_BYTES;
 const MAX_UNIFIED_DIFF_AFFECTED_FILES: usize = 128;
@@ -529,7 +529,7 @@ impl ToolRuntime {
         diff: String,
     ) -> Result<ShellRunResponse, UnifiedDiffCommandFailure> {
         let (request_id, receiver) = self
-            .shell_clients
+            .runner_registry
             .enqueue_run(
                 ShellRunRequest {
                     client_id,
@@ -553,7 +553,7 @@ impl ToolRuntime {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(_)) => {
                 let dispatch = self
-                    .shell_clients
+                    .runner_registry
                     .cancel_request_dispatch_state(&request_id)
                     .await;
                 Err(UnifiedDiffCommandFailure {
@@ -565,7 +565,7 @@ impl ToolRuntime {
             }
             Err(_) => {
                 let dispatch = self
-                    .shell_clients
+                    .runner_registry
                     .cancel_request_dispatch_state(&request_id)
                     .await;
                 Err(UnifiedDiffCommandFailure {
@@ -650,7 +650,7 @@ impl ToolRuntime {
             }
         };
         let check_state =
-            agent_command_lifecycle(&check_response, UNIFIED_DIFF_COMMAND_TIMEOUT_SECS);
+            runner_command_lifecycle(&check_response, UNIFIED_DIFF_COMMAND_TIMEOUT_SECS);
         if check_state != ShellCommandExecutionState::Completed || check_response.error.is_some() {
             return ToolResult::err_with_output(
                 "Unified diff preflight did not complete reliably. No apply command was dispatched; retrying the same request is safe after the Runner is healthy.",
@@ -732,7 +732,7 @@ impl ToolRuntime {
             }
         };
         let apply_state =
-            agent_command_lifecycle(&apply_response, UNIFIED_DIFF_COMMAND_TIMEOUT_SECS);
+            runner_command_lifecycle(&apply_response, UNIFIED_DIFF_COMMAND_TIMEOUT_SECS);
         if apply_state == ShellCommandExecutionState::NotStarted {
             return ToolResult::err_with_output(
                 "Unified diff apply was not started by the Runner; no mutation from this apply request occurred. Retrying the same request is safe.",

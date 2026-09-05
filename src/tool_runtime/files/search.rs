@@ -265,16 +265,6 @@ pub(crate) fn search_agent_timeout_budget(effective_timeout_secs: u64) -> (u64, 
     (command_timeout, wait_timeout, outer_timeout)
 }
 
-impl SearchResultMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Matches => "matches",
-            Self::FilesWithMatches => "files_with_matches",
-            Self::Count => "count",
-        }
-    }
-}
-
 fn validate_search_globs(
     field: &'static str,
     globs: Vec<String>,
@@ -694,7 +684,7 @@ pub(crate) fn search_project_text_command_with_head_fallbacks(
 }
 
 fn search_request_dropped_tool_result(options: &SearchOptions) -> ToolResult {
-    let message = "search_project_text agent request was dropped";
+    let message = "search_project_text Runner request was dropped";
     search_failure_tool_result(
         options,
         "search_request_dropped",
@@ -799,6 +789,24 @@ struct SearchContextLine {
     text: String,
 }
 
+const SEARCH_READ_HINT_CONTEXT_BEFORE: u64 = 20;
+const SEARCH_READ_HINT_LIMIT: u64 = 80;
+
+#[derive(Debug, Serialize)]
+struct SearchReadHint {
+    path: String,
+    start_line: u64,
+    limit: u64,
+}
+
+fn search_read_hint(path: &str, line: u64) -> SearchReadHint {
+    SearchReadHint {
+        path: path.to_string(),
+        start_line: line.saturating_sub(SEARCH_READ_HINT_CONTEXT_BEFORE).max(1),
+        limit: SEARCH_READ_HINT_LIMIT,
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct SearchMatch {
     path: String,
@@ -806,6 +814,7 @@ struct SearchMatch {
     preview: String,
     context_before: Vec<SearchContextLine>,
     context_after: Vec<SearchContextLine>,
+    read_hint: SearchReadHint,
 }
 
 #[derive(Debug, Serialize)]
@@ -1190,6 +1199,7 @@ fn search_matches_from_records(
             preview: record.text.clone(),
             context_before,
             context_after,
+            read_hint: search_read_hint(&record.path, record.line),
         });
     }
     (matches, truncated)
@@ -1642,7 +1652,7 @@ impl ToolRuntime {
             "timeout_secs": command_timeout,
         });
         let (req_id, rx) = match self
-            .shell_clients
+            .runner_registry
             .enqueue_run(
                 ShellRunRequest {
                     client_id,
@@ -1663,7 +1673,7 @@ impl ToolRuntime {
                     "agent_unavailable",
                     "agent_request",
                     "agent_request_failed",
-                    "search_project_text Agent request could not be started",
+                    "search_project_text Runner request could not be started",
                     None,
                     None,
                 )
@@ -1714,7 +1724,7 @@ impl ToolRuntime {
                         "search_execution_failed",
                         "agent_execution",
                         "agent_execution_failed",
-                        "search_project_text Agent execution failed",
+                        "search_project_text Runner execution failed",
                         backend_status
                             .marker_present
                             .then_some(backend_status.backend.as_str()),
@@ -1730,13 +1740,13 @@ impl ToolRuntime {
                 )
             }
             Ok(Err(_)) => {
-                self.shell_clients.cancel_request(&req_id).await;
+                self.runner_registry.cancel_request(&req_id).await;
                 // Channel closed without a result: agent disconnect / waiter
                 // drop — not a search timeout.
                 search_request_dropped_tool_result(&options)
             }
             Err(_) => {
-                self.shell_clients.cancel_request(&req_id).await;
+                self.runner_registry.cancel_request(&req_id).await;
                 // Preserve whether the per-search transport bound or the
                 // batch's shared absolute deadline ended the wait.
                 search_timeout_tool_result(
@@ -2434,7 +2444,7 @@ mod tests {
 
     #[test]
     fn search_local_and_agent_parse_same_stdout_identically() {
-        // The agent path parses the runner's stdout with the same function as
+        // The Runner path parses the Runner's stdout with the same function as
         // the local path, so the exact same stdout string must yield identical
         // field semantics in both. This pins that parity for the record fields
         // the task lists: backend, result_mode, matches, count, truncated,

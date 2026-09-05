@@ -5,7 +5,7 @@ use super::permissions::PermissionEvaluator;
 use super::runtime_info::RuntimeInfo;
 use super::sessions;
 use super::SessionShellRegistry;
-use crate::shell_client::ShellClientRegistry;
+use crate::runner_http::RunnerRegistry;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 #[cfg(test)]
@@ -103,8 +103,9 @@ impl ValidationTerminalReconciliationTestHook {
 
 #[derive(Clone)]
 pub struct ToolRuntime {
-    pub shell_clients: Arc<ShellClientRegistry>,
+    pub runner_registry: Arc<RunnerRegistry>,
     pub(crate) mcp_gateway: Arc<crate::mcp_gateway::McpGatewayRuntime>,
+    pub(crate) plugin_gateway: Arc<crate::plugin_gateway::PluginGatewayRuntime>,
     pub(crate) coding_agent_runs: Arc<super::coding_agent::CodingAgentServerState>,
     pub runtime_info: Arc<RuntimeInfo>,
     runtime_exposure: crate::model_surface::RuntimeExposure,
@@ -164,10 +165,11 @@ pub struct ToolRuntime {
 }
 
 impl ToolRuntime {
-    pub fn new(shell_clients: Arc<ShellClientRegistry>, runtime_info: Arc<RuntimeInfo>) -> Self {
+    pub fn new(runner_registry: Arc<RunnerRegistry>, runtime_info: Arc<RuntimeInfo>) -> Self {
         Self {
-            shell_clients,
+            runner_registry,
             mcp_gateway: Arc::new(crate::mcp_gateway::McpGatewayRuntime::default()),
+            plugin_gateway: Arc::new(crate::plugin_gateway::PluginGatewayRuntime::default()),
             coding_agent_runs: Arc::new(super::coding_agent::CodingAgentServerState::default()),
             runtime_info,
             runtime_exposure: crate::model_surface::RuntimeExposure::Runtime(
@@ -249,14 +251,12 @@ impl ToolRuntime {
 
     #[cfg(test)]
     pub(crate) fn new_for_tests() -> Self {
-        Self::new_for_tests_with_shell_clients(Arc::new(ShellClientRegistry::default()))
+        Self::new_for_tests_with_runner_registry(Arc::new(RunnerRegistry::default()))
     }
 
     #[cfg(test)]
-    pub(crate) fn new_for_tests_with_shell_clients(
-        shell_clients: Arc<ShellClientRegistry>,
-    ) -> Self {
-        Self::new(shell_clients, Arc::new(RuntimeInfo::default()))
+    pub(crate) fn new_for_tests_with_runner_registry(runner_registry: Arc<RunnerRegistry>) -> Self {
+        Self::new(runner_registry, Arc::new(RuntimeInfo::default()))
     }
 
     pub fn with_session_ledger(mut self, path: impl Into<PathBuf>) -> Self {
@@ -324,18 +324,6 @@ impl ToolRuntime {
     #[cfg(test)]
     pub(crate) fn with_structured_execution_sync_wait(mut self, wait: Duration) -> Self {
         self.structured_execution_sync_wait = wait;
-        self
-    }
-
-    /// Replace the in-memory session store with one capped at `max_events_per_session`
-    /// events, so tests can exercise ledger truncation without recording hundreds of
-    /// events. Sessions are still durable-exact within the in-memory store.
-    #[cfg(test)]
-    pub(crate) fn with_session_event_cap(mut self, max_events_per_session: usize) -> Self {
-        self.sessions = sessions::SessionStore::new_in_memory(
-            sessions::DEFAULT_MAX_SESSIONS,
-            max_events_per_session,
-        );
         self
     }
 

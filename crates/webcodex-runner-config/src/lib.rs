@@ -13,13 +13,17 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 
-use webcodex_core::shell_protocol::ShellClientCapabilities;
+use webcodex_core::runner_protocol::RunnerCapabilities;
 
 pub mod paths;
 
 /// Default Runner project registry selected for a new system-level install.
 pub const DEFAULT_INIT_PROJECT_REGISTRY_DIR: &str = "/etc/webcodex/project-registry";
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 1000;
+/// Largest idle polling floor allowed when polling can be selected. The Server
+/// currently considers a Runner offline after 60 seconds without a keepalive;
+/// 30 seconds leaves one full interval of scheduling/network slack.
+pub const MAX_POLL_INTERVAL_MS: u64 = 30_000;
 pub const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 /// Config value selecting the polling transport (HTTP `/api/shell/agent/poll`).
@@ -111,6 +115,13 @@ pub fn validate_runner_init_options(opts: &RunnerInitOptions) -> Result<(), Stri
     ) {
         return Err("--transport must be websocket, polling, quic, or auto".to_string());
     }
+    if matches!(opts.transport.as_str(), TRANSPORT_POLLING | TRANSPORT_AUTO)
+        && opts.poll_interval_ms > MAX_POLL_INTERVAL_MS
+    {
+        return Err(format!(
+            "--poll-interval-ms must be <= {MAX_POLL_INTERVAL_MS} when polling may be used"
+        ));
+    }
     if opts.project_registry_dir.as_os_str().is_empty() {
         return Err("--project-registry-dir cannot be empty".to_string());
     }
@@ -168,7 +179,7 @@ struct GeneratedRunnerConfig {
     transport: String,
     poll_interval_ms: u64,
     project_registry_dir: PathBuf,
-    capabilities: ShellClientCapabilities,
+    capabilities: RunnerCapabilities,
     policy: GeneratedRunnerPolicy,
 }
 
@@ -192,7 +203,7 @@ pub fn generated_runner_config_toml(opts: &RunnerInitOptions) -> Result<String, 
         transport: opts.transport.clone(),
         poll_interval_ms: opts.poll_interval_ms,
         project_registry_dir: opts.project_registry_dir.clone(),
-        capabilities: ShellClientCapabilities {
+        capabilities: RunnerCapabilities {
             shell: true,
             file_read: true,
             file_write: true,
@@ -302,6 +313,9 @@ pub fn generated_runner_config_toml(opts: &RunnerInitOptions) -> Result<String, 
             // ACP autonomous coding is a runtime-only capability and must not be
             // silently enabled by generated legacy agent config.
             coding_agent_runs: false,
+            // Native Tool Plugins are likewise advertised only by a Runner
+            // binary that implements the typed local Plugin lifecycle.
+            native_tool_plugins: false,
         },
         policy: GeneratedRunnerPolicy {
             allow_raw_shell: true,
@@ -496,5 +510,22 @@ mod tests {
             assert!(!content.contains("structured_go_test_tool"));
             assert!(!content.contains("job_state_reconciliation"));
         }
+    }
+
+    #[test]
+    fn polling_capable_init_rejects_interval_beyond_online_window_slack() {
+        for transport in [TRANSPORT_POLLING, TRANSPORT_AUTO] {
+            let mut opts = init_opts(PathBuf::from("-"));
+            opts.transport = transport.to_string();
+            opts.poll_interval_ms = MAX_POLL_INTERVAL_MS + 1;
+            let error = validate_runner_init_options(&opts).unwrap_err();
+            assert!(error.contains("must be <= 30000"), "{transport}: {error}");
+            opts.poll_interval_ms = MAX_POLL_INTERVAL_MS;
+            validate_runner_init_options(&opts).unwrap();
+        }
+
+        let mut websocket = init_opts(PathBuf::from("-"));
+        websocket.poll_interval_ms = MAX_POLL_INTERVAL_MS + 1;
+        validate_runner_init_options(&websocket).unwrap();
     }
 }
