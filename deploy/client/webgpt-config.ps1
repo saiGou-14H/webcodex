@@ -12,7 +12,8 @@ $ErrorActionPreference = "Stop"
 $script:WcConfigCommands = @(
   'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
   'set-apikey', 'show-apikey', 'edit-apikey', 'get-bearer',
-  'set-server', 'set-bootstrap', 'set-tunnel', 'help'
+  'set-server', 'set-bootstrap', 'set-tunnel',
+  'set-server-token', 'set-allowed-root', 'pair', 'help'
 )
 
 function Is-WcConfigCommand {
@@ -174,6 +175,98 @@ function Set-WcTunnel {
   if ($Bearer) { Write-Host ("[tunnel] bearer = " + (Mask-Secret $Bearer.Trim())) }
 }
 
+# ---- server admin token (Option B: fully client-side provisioning) ----
+
+function Set-WcServerToken {
+  param([string]$Token)
+  $val = $Token
+  if (-not $val) {
+    $val = Read-Host "Enter server admin token (WEBCODEX_TOKEN)"
+  }
+  if ($val) { $val = $val.Trim() }
+  if (-not $val) { Write-Host "[x] no server token provided"; return }
+  Set-WcField 'server_token' $val
+  Write-Host ("[server-token] saved locally (masked: " + (Mask-Secret $val) + ")")
+}
+
+function Set-WcAllowedRoot {
+  param([string]$Root)
+  if (-not $Root) { Write-Host "[x] usage: set-allowed-root <path>"; return }
+  Set-WcField 'allowed_root' $Root.Trim()
+  Write-Host ("[allowed-root] " + $Root.Trim())
+}
+
+# ---- pair: fully client-side runner provisioning (Option B) ----
+#   pairing create (client, admin token) -> auto login (client, consumes code once)
+#   The wc_pair_... code is minted by POST /api/pairing/create and consumed once
+#   by login/enroll; keep it purely automated here (no manual copy/paste).
+
+function Pair-WcClient {
+  param([string]$ClientId = $null)
+  $cfg = Load-WcConfig
+  $node = $env:WC_NODE
+  $cli  = $env:WC_CLI
+  if (-not $cli -or -not $node) {
+    Write-Host "[x] WC_NODE/WC_CLI not set. Run via: webgpt-client.bat pair"
+    return 1
+  }
+  $server = [string]$cfg['server_url']
+  $user   = [string]$cfg['username']
+  $tok    = [string]$cfg['server_token']
+  if (-not $tok -and $env:WC_SERVER_TOKEN) { $tok = $env:WC_SERVER_TOKEN }
+  if (-not $server) { Write-Host "[x] server_url not set. Use: webgpt-client.bat set-server <url> [username]"; return 1 }
+  if (-not $user)   { Write-Host "[x] username not set. Use: webgpt-client.bat set-server <url> <username>"; return 1 }
+  if (-not $tok)    { Write-Host "[x] server admin token not set. Use: webgpt-client.bat set-server-token <WEBCODEX_TOKEN>"; return 1 }
+
+  # 1) client-side pairing create (token via env var, never on the command line)
+  $env:WEBCODEX_TOKEN = $tok
+  $pairArgs = @($node, $cli, 'pairing', 'create', '--server-url', $server, '--username', $user,
+    '--ttl-secs', '600', '--json')
+  if ($ClientId) { $pairArgs += @('--client-id', $ClientId) }
+  Write-Host ("[pair] minting one-time code via server: " + $server)
+  try {
+    $out = (& $pairArgs 2>&1 | Out-String)
+    $code = $LASTEXITCODE
+  } finally {
+    Remove-Item Env:\WEBCODEX_TOKEN -ErrorAction SilentlyContinue
+  }
+  if ($code -ne 0) {
+    Write-Host "[x] pairing create failed (exit $code):"
+    Write-Host $out
+    return 1
+  }
+  $pc = $null
+  try { $pc = $out.Trim() | ConvertFrom-Json } catch { }
+  if (-not $pc -or -not $pc.pairing_code) {
+    Write-Host "[x] could not parse pairing code from output:"
+    Write-Host $out
+    return 1
+  }
+  $pcode = [string]$pc.pairing_code
+  $did   = [string]$pc.client_id
+  Write-Host ("[pair] one-time code minted (masked: " + (Mask-Secret $pcode) + "), expires " + [string]$pc.expires_at)
+
+  # 2) auto login (consumes the code exactly once, right here)
+  $loginArgs = @($node, $cli, 'login', $server, '--code', $pcode)
+  if ($did) { $loginArgs += @('--device', $did) }
+  if ([string]$cfg['allowed_root']) { $loginArgs += @('--allowed-root', [string]$cfg['allowed_root']) }
+  Write-Host "[pair] logging in (code consumed on this machine)..."
+  $out2 = (& $loginArgs 2>&1 | Out-String)
+  $code2 = $LASTEXITCODE
+  if ($code2 -ne 0) {
+    Write-Host "[x] login failed (exit $code2):"
+    Write-Host $out2
+    Write-Host "(!) the one-time code was consumed; re-run: webgpt-client.bat pair"
+    return 1
+  }
+  if ($out2) { Write-Host $out2 }
+  $hostPath = $server -replace '^https?://', ''
+  $agent = Join-Path (Join-Path (Join-Path $env:APPDATA "webcodex") $hostPath) (Join-Path $user "agent.toml")
+  Write-Host ("[pair] done. agent.toml = " + $agent)
+  Write-Host "       Next: run 'webgpt-client.bat' (no args) to start the Runner."
+  return 0
+}
+
 # ---- helpers ----
 
 function Get-WcEffectiveMcpUrl {
@@ -257,6 +350,8 @@ function Show-WcConfig {
   Write-Host ("  server_url    = " + [string]$cfg['server_url'])
   Write-Host ("  username      = " + [string]$cfg['username'])
   Write-Host ("  bootstrap     = " + (Mask-Secret ([string]$cfg['bootstrap'])))
+  Write-Host ("  server_token  = " + (Mask-Secret ([string]$cfg['server_token'])))
+  Write-Host ("  allowed_root  = " + [string]$cfg['allowed_root'])
   Write-Host ("  mode          = " + [string]$cfg['mode'])
   Write-Host ("  mcp.url       = " + [string]$cfg['mcp'].url)
   Write-Host ("  mcp.bearer    = " + (Mask-Secret ([string]$cfg['mcp'].bearer)))
@@ -281,6 +376,9 @@ function Show-WcConfigHelp {
   Write-Host "  webgpt-client.bat show-apikey [--reveal]    # show cached API key (masked by default)"
   Write-Host "  webgpt-client.bat get-bearer                # print cached wc_pat (full)"
   Write-Host "  webgpt-client.bat set-tunnel <url> [bearer]"
+  Write-Host "  webgpt-client.bat set-server-token <t>      # cache server admin token (Option B)"
+  Write-Host "  webgpt-client.bat set-allowed-root <path>   # Runner allowed root (used by pair)"
+  Write-Host "  webgpt-client.bat pair [client-id]          # CLI-side pairing create + auto login"
   Write-Host "  webgpt-client.bat                           # launch runner (applies cached config)"
 }
 
@@ -322,6 +420,17 @@ function Invoke-WcConfigCommand {
       $b = $null; if ($Rest.Count -gt 1) { $b = $Rest[1] }
       Set-WcTunnel -Url $(if ($Rest.Count -gt 0) { $Rest[0] } else { $null }) -Bearer $b
       return 0
+    }
+    'set-server-token' {
+      Set-WcServerToken -Token $(if ($Rest.Count -gt 0) { $Rest[0] } else { $null })
+      return 0
+    }
+    'set-allowed-root' {
+      Set-WcAllowedRoot -Root $(if ($Rest.Count -gt 0) { $Rest[0] } else { $null })
+      return 0
+    }
+    'pair' {
+      return (Pair-WcClient -ClientId $(if ($Rest.Count -gt 0) { $Rest[0] } else { $null }))
     }
     default { Write-Host ("[x] unknown config command: " + $Command); Show-WcConfigHelp; return 2 }
   }

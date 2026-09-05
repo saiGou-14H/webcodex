@@ -26,6 +26,9 @@ Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱
 | `show-apikey [--reveal]` | 查看缓存 API Key（默认脱敏；`--reveal` 显示明文） |
 | `get-bearer` | 打印缓存的 `wc_pat` 明文（用于复制到隧道/别处） |
 | `set-tunnel <url> [bearer]` | 配置 Tunnel 模式用的 MCP 端点与（可选）注入的 Bearer |
+| `set-server-token <t>` | 缓存**服务器管理员令牌** `WEBCODEX_TOKEN`（方案 B 专用；用于客户端签发配对码） |
+| `set-allowed-root <path>` | 设置 Runner 的 allowed root（`pair` 登录时使用，如 `D:\work`） |
+| `pair [client-id]` | **方案 B 一键注册**：客户端调 `pairing create`（用管理员令牌，令牌经环境变量传递不落命令行）拿随机 `wc_pair_*` → 立刻自动 `login` 消费 |
 | `show-config` | 查看全部缓存配置（密文脱敏） |
 | `help` | 列出所有子命令 |
 
@@ -35,6 +38,19 @@ Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱
 
 - **mcp 模式**：本地 Codex 通过 `codex mcp add webcodex` 直连 `<server>/mcp`，启动时导出 `WEBCODEX_BEARER=<mcp.bearer>`（刚刚签发的 wc_pat）。
 - **tunnel 模式**：走 OpenAI Secure MCP Tunnel（WebGpt）——启动时导出 `WEBCODEX_BEARER=<tunnel.bearer>`，MCP URL 指向 `tunnel.url`，不需要每用户 token。
+
+**方案 B：完全客户端一侧注册 Runner（无需在服务器上执行任何命令）**
+
+只需把服务器管理员令牌（`/etc/webcodex/webcodex.env` 里的 `WEBCODEX_TOKEN`）放进来一次，之后包括登录在内的所有步骤都在 Windows 上完成：
+
+```powershell
+D:\WebGpt\webgpt-client.bat set-server https://chatgpt.kunkun.chat saigou
+D:\WebGpt\webgpt-client.bat set-server-token <WEBCODEX_TOKEN>   # 仅此一次；缓存于 client.json（icacls 保护）
+D:\WebGpt\webgpt-client.bat set-allowed-root D:\work
+D:\WebGpt\webgpt-client.bat pair                                 # 自动：签发 wc_pair_* → login → agent.toml
+```
+
+`pair` 的随机配对码由服务器 `POST /api/pairing/create` 生成并登记（客户端不能凭空造一个服务器认得的码，这是协议约束），脚本拿到后**立即消费并登录**（一次性码不经过手工复制）。之后照常 `add-mcp` / `set-apikey` / `mode`。
 
 **启动时自动应用：** 无参数运行 `webgpt-client.bat` 会读取缓存配置并导出 `WEBCODEX_BEARER`（按模式取 mcp/tunnel 的 bearer）、`OPENAI_API_KEY`、`OPENAI_BASE_URL`（若已配置）——Codex/ACP 代理子进程自动继承。
 
