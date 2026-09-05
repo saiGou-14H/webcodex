@@ -9,6 +9,10 @@
 
 $ErrorActionPreference = "Stop"
 
+# Version stamp: printed by add-mcp/pair so we can tell which script build
+# actually runs on a machine (update via the download bundle).
+$script:WcScriptStamp = "2026-09-05-3"
+
 $script:WcConfigCommands = @(
   'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
   'set-apikey', 'show-apikey', 'edit-apikey', 'get-bearer',
@@ -127,31 +131,42 @@ function Test-WcPlaceholder([string]$v) {
   return ($v -match '[<>]' -or $v -match '(?i)redacted|change|your|example|placeholder')
 }
 
-# Run a native command with a hard timeout. Uses Start-Process + WaitForExit
-# so a hung CLI (e.g. proxy/network blackhole) cannot block the launcher
-# forever, and captures stdout/stderr via files (no PS 5.1 stderr trap).
+# Run a native command with a hard timeout via System.Diagnostics.Process
+# (not Start-Process, whose -ArgumentList validation in PS 5.1 chokes on
+# empty/null-ish collections). stdout/stderr are async-read, null args are
+# flattened to "", and a hung CLI is killed after TimeoutMs.
 function Invoke-NativeCapture {
-  param([string]$Exe, [string[]]$Args, [int]$TimeoutMs = 120000)
-  $base = Join-Path $env:TEMP ("wcrun_" + [guid]::NewGuid().ToString("N"))
-  $outFile = $base + ".out"
-  $errFile = $base + ".err"
-  $p = $null
+  param([string]$Exe, [string[]]$Args = @(), [int]$TimeoutMs = 120000)
   try {
-    $p = Start-Process -FilePath $Exe -ArgumentList $Args -NoNewWindow -PassThru `
-      -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    if (-not $Exe) { return @{ out = ""; err = "(internal: empty exe)"; code = -1; timedOut = $false } }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $argParts = @()
+    foreach ($a in $Args) {
+      $s = [string]$a
+      if ($s -match '[\s"]') { $s = '"' + ($s -replace '"', '\"') + '"' }
+      $argParts += $s
+    }
+    $psi.Arguments = ($argParts -join ' ')
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    if (-not $p.Start()) { return @{ out = ""; err = "(internal: process start failed)"; code = -1; timedOut = $false } }
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
     if (-not $p.WaitForExit($TimeoutMs)) {
       try { $p.Kill() } catch { }
+      try { $p.WaitForExit() } catch { }
       return @{ out = ""; err = "(timeout after ${TimeoutMs}ms: CLI did not exit. Check TCP/DNS to the server and proxy: run curl.exe -v https://chatgpt.kunkun.chat/ ; if a broken system proxy is set, re-run with WC_NO_PROXY=1)"; code = -1; timedOut = $true }
     }
-    $stdout = ""
-    if (Test-Path $outFile) { $stdout = [string](Get-Content $outFile -Raw -ErrorAction SilentlyContinue); Remove-Item $outFile -Force -ErrorAction SilentlyContinue }
-    $stderr = ""
-    if (Test-Path $errFile) { $stderr = [string](Get-Content $errFile -Raw -ErrorAction SilentlyContinue); Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
-    return @{ out = $stdout; err = $stderr; code = $p.ExitCode; timedOut = $false }
+    $stdout = $outTask.Result
+    $stderr = $errTask.Result
+    return @{ out = [string]$stdout; err = [string]$stderr; code = $p.ExitCode; timedOut = $false }
   } catch {
     return @{ out = ""; err = [string]$_; code = -1; timedOut = $false }
-  } finally {
-    if ($p -and (-not $p.HasExited)) { try { $p.Kill() } catch { } }
   }
 }
 
@@ -429,7 +444,7 @@ function Add-WcMcp {
   if (-not $boot)   { Write-Host "[x] no account/admin credential for token mint. Use: webgpt-client.bat set-bootstrap <wc_pat> OR fill webgpt.env WEBCODEX_BOOTSTRAP / WEBCODEX_TOKEN"; return 1 }
   $scopesCsv = Get-WcDefaultScopesCsv
   if ($cfg['scopes'] -and ($cfg['scopes'] -is [array])) { $scopesCsv = ($cfg['scopes'] -join ',') }
-  Write-Host ("[mcp] minting token: webcodex tokens create-local (server=" + $server + ", user=" + $user + ")")
+  Write-Host ("[mcp] script=" + $script:WcScriptStamp + " minting token: webcodex tokens create-local (server=" + $server + ", user=" + $user + ")")
   $env:WEBCODEX_ACCOUNT_CREDENTIAL = $boot
   try {
     $mcpArgs = @($cli, 'tokens', 'create-local',
