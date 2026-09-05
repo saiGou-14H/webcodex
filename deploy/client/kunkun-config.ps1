@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-15"
+$script:WcScriptStamp = "2026-09-05-16"
 
 $script:WcConfigCommands = @(
   'menu', 'inject', 'reset', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
@@ -386,9 +386,9 @@ function Show-WcMode {
 # ---- api key (cached locally + applied to Codex desktop config) ----
 
 function Get-WcCodexConfigPath {
-  $home = $env:CODEX_HOME
-  if (-not $home) { $home = Join-Path $env:USERPROFILE ".codex" }
-  return (Join-Path $home "config.toml")
+  $codexDir = $env:CODEX_HOME
+  if (-not $codexDir) { $codexDir = Join-Path $env:USERPROFILE ".codex" }
+  return (Join-Path $codexDir "config.toml")
 }
 
 function Get-WcCodexOriginalBackup {
