@@ -21,7 +21,7 @@ Linux public server 66.92.18.39        Windows (Runner + project + Codex)
 | Machine | Copy from `deploy/` | Files |
 |---|---|---|
 | **Linux server** | `deploy/server/` | `webcodex.service`, `webcodex.socket`, `webcodex-runner.service`, `webcodex-tunnel.service`, `run-tunnel.sh`, `nginx.chatgpt.kunkun.chat.conf`, `webcodex.env.example`, `agent.toml.linux.example` |
-| **Windows Runner** | `deploy/client/` | `webgpt-client.bat`, `webgpt-client.ps1`, `codex-acp-proxy.js`, `agent.toml.windows.example` |
+| **Windows Runner** | `deploy/client/` | `webgpt-client.bat`, `webgpt-client.ps1`, `webgpt-config.ps1`, `codex-acp-proxy.js`, `agent.toml.windows.example`, `CODEX_SYSTEM_PROMPT.md`, `AGENTS.md` |
 
 > `server/` and `client/` have their own READMEs; upstream `deploy/*.example` are generic templates, not used here.
 
@@ -58,10 +58,11 @@ Linux public server 66.92.18.39        Windows (Runner + project + Codex)
 ## 3. Windows Runner — install checklist
 
 - [ ] **① Standalone webcodex-cli**: `D:\WebGpt\webcodex-cli-win\bin\webcodex.js` (not in this repo; use the offline bundle). `node ...webcodex.js --version` → 0.3.9.
-- [ ] **② Place client scripts**: extract `deploy/client/` into `D:\WebGpt` (`webgpt-client.bat`, `webgpt-client.ps1`, `codex-acp-proxy.js`, `agent.toml.windows.example`).
+- [ ] **② Place client scripts**: extract `deploy/client/` into `D:\WebGpt` (`webgpt-client.bat`, `webgpt-client.ps1`, `webgpt-config.ps1`, `codex-acp-proxy.js`, `agent.toml.windows.example`, `CODEX_SYSTEM_PROMPT.md`, `AGENTS.md`).
 - [ ] **③ Login (if not yet)**: `node webcodex-cli-win\bin\webcodex.js login https://chatgpt.kunkun.chat --code <wc_pair> --allowed-root D:\work`; the `agent.toml` lands at `%APPDATA%\webcodex\https_chatgpt.kunkun.chat\saigou\agent.toml`.
-- [ ] **④ Double-click `webgpt-client.bat`** (auto: kill leftovers → detect node/codex → rewrite `[acp]` → set env → start Runner).
-- [ ] **⑤ Prereq**: Codex CLI installed & logged in (`codex --version`; proxy uses the real `codex.exe` absolute path or `codex.js`).
+- [ ] **④ (Optional) Configure the connection**: `webgpt-client.bat set-server https://chatgpt.kunkun.chat saigou` → `set-bootstrap <wc_pat>` → `add-mcp` (mints a `wc_pat_xxx` and writes the Codex MCP) → `set-apikey` (cache model API key) → `mode mcp|tunnel` to pick the connection mode. Config cache: `%USERPROFILE%\.webgpt\client.json`.
+- [ ] **⑤ Double-click `webgpt-client.bat`** (auto: kill leftovers → detect node/codex → rewrite `[acp]` → set env → inject prompt → apply connection config → start Runner).
+- [ ] **⑥ Prereq**: Codex CLI installed & logged in (`codex --version`; proxy uses the real `codex.exe` absolute path or `codex.js`).
 
 ## 4. Usage
 
