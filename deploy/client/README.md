@@ -4,6 +4,7 @@ Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱
 
 - `webgpt-client.bat` / `webgpt-client.ps1` — 一键启动器 + 配置管理入口（杀残留 → 探测 → 回填 [acp] → 设 env → **提示词注入** → **应用连接配置** → 启动 Runner）
 - `webgpt-config.ps1` — 配置管理库（MCP/APIKey/模式，本地缓存 `%USERPROFILE%\.webgpt\client.json`，icacls 保护）
+- `webgpt.env.example` — 解压包里的 `webgpt.env` 模板（`WEBCODEX_TOKEN=<填这里>`；`pair` 自动读取，真实令牌只填本机这份）
 - `codex-acp-proxy.js` — ACP v1 代理（桥接 WebCodex Runner ↔ codex；用真实 codex.exe 绝对路径 + stdin+EOF + --sandbox）
 - `agent.toml.windows.example` — Windows Runner 配置（token 已脱敏，含 [acp]，allowed_roots=D:\work）
 - `CODEX_SYSTEM_PROMPT.md` — Codex 系统注入提示词（44 工具，**项目级、可复用，不含硬编码路径**）
@@ -41,14 +42,17 @@ Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱
 
 **方案 B：完全客户端一侧注册 Runner（无需在服务器上执行任何命令）**
 
-只需把服务器管理员令牌（`/etc/webcodex/webcodex.env` 里的 `WEBCODEX_TOKEN`）放进来一次，之后包括登录在内的所有步骤都在 Windows 上完成：
+管理员令牌放在**解压包里的配置 `D:\WebGpt\webgpt.env`**，`pair` 会自动读取：
 
 ```powershell
-D:\WebGpt\webgpt-client.bat set-server https://chatgpt.kunkun.chat saigou
-D:\WebGpt\webgpt-client.bat set-server-token <WEBCODEX_TOKEN>   # 仅此一次；缓存于 client.json（icacls 保护）
-D:\WebGpt\webgpt-client.bat set-allowed-root D:\work
-D:\WebGpt\webgpt-client.bat pair                                 # 自动：签发 wc_pair_* → login → agent.toml
+# 1) 编辑 D:\WebGpt\webgpt.env，把 WEBCODEX_TOKEN=<填这里> 换成服务器
+#    /etc/webcodex/webcodex.env 里的真实 WEBCODEX_TOKEN
+#    （可顺便填 WEBCODEX_SERVER_URL / WEBCODEX_USERNAME / WEBCODEX_ALLOWED_ROOT）
+# 2) 一键注册：读取 webgpt.env → 签发 wc_pair_* → 自动 login → agent.toml
+D:\WebGpt\webgpt-client.bat pair
 ```
+
+读取优先级：配置缓存（`set-server`/`set-server-token`/`set-allowed-root`）→ `webgpt.env` → `WC_SERVER_TOKEN` 环境变量；占位值（`<填这里>`/REDACTED 等）视为未设置。令牌经 `WEBCODEX_TOKEN` 环境变量传给子进程，**不落命令行**。公开下载包里的 `webgpt.env` 只含占位符——真实令牌不要放进公开下载站。
 
 `pair` 的随机配对码由服务器 `POST /api/pairing/create` 生成并登记（客户端不能凭空造一个服务器认得的码，这是协议约束），脚本拿到后**立即消费并登录**（一次性码不经过手工复制）。之后照常 `add-mcp` / `set-apikey` / `mode`。
 

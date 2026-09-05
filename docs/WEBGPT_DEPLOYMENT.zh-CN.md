@@ -63,7 +63,8 @@ deploy/server/   服务器（Linux）侧部署文件：webcodex.service/.socket�
                  webcodex-tunnel.service、run-tunnel.sh、nginx.chatgpt.kunkun.chat.conf、
                  webcodex.env.example、agent.toml.linux.example
 deploy/client/   客户端（Windows Runner）侧脚本：webgpt-client.bat/.ps1、webgpt-config.ps1、
-                 codex-acp-proxy.js、agent.toml.windows.example、CODEX_SYSTEM_PROMPT.md、AGENTS.md
+                 webgpt.env.example、codex-acp-proxy.js、agent.toml.windows.example、
+                 CODEX_SYSTEM_PROMPT.md、AGENTS.md
 ```
 > 📋 **部署清单 / 哪台机器放哪个文件夹**（中英双语）：[`deploy/README.md`](../deploy/README.md)（简体中文）/ [`deploy/README.en.md`](../deploy/README.en.md)（English）。
 
@@ -244,16 +245,17 @@ D:\WebGpt\webgpt-client.bat show-config                  # 核对（密文脱敏
 
 **方案 B：完全客户端注册 Runner（服务器侧零操作）**
 
-只要把服务器管理员令牌放进客户端一次，登录也全部在 Windows 完成：
+管理员令牌放在**解压包里的配置 `D:\WebGpt\webgpt.env`**（随 `webgpt-client-win.tar.gz` 解出），`pair` 自动读取：
 
 ```powershell
-D:\WebGpt\webgpt-client.bat set-server https://chatgpt.kunkun.chat saigou
-D:\WebGpt\webgpt-client.bat set-server-token <WEBCODEX_TOKEN>  # 唯一一次（/etc/webcodex/webcodex.env 里的值）
-D:\WebGpt\webgpt-client.bat set-allowed-root D:\work
-D:\WebGpt\webgpt-client.bat pair                                # 签发 wc_pair_* → 自动 login → agent.toml
+# 1) 编辑 D:\WebGpt\webgpt.env，把 WEBCODEX_TOKEN=<填这里> 换成服务器
+#    /etc/webcodex/webcodex.env 里的真实 WEBCODEX_TOKEN
+#    （可顺便填 WEBCODEX_SERVER_URL / WEBCODEX_USERNAME / WEBCODEX_ALLOWED_ROOT）
+# 2) 一键注册：读取 webgpt.env → 签发 wc_pair_* → 自动 login → agent.toml
+D:\WebGpt\webgpt-client.bat pair
 ```
 
-`pairing create` 是远程 HTTP 调用（`POST /api/pairing/create`），**随机 `wc_pair_*` 由服务器生成并登记**（`/api/pairing/enroll` 只认服务器登记的码，客户端无法凭空伪造一个可用的）；脚本拿到码后**立即登录消费**，全程无需手工复制。管理员令牌经 `WEBCODEX_TOKEN` 环境变量传给子进程（不落命令行），并缓存在 icacls 保护的 `client.json`。之后照常 `add-mcp` / `set-apikey` / `mode`。
+读取优先级：配置缓存（`set-server`/`set-server-token`/`set-allowed-root`）→ `webgpt.env` → `WC_SERVER_TOKEN` 环境变量；占位值（`<填这里>`/REDACTED 等）视为未设置。`pairing create` 是远程 HTTP 调用（`POST /api/pairing/create`），**随机 `wc_pair_*` 由服务器生成并登记**（`/api/pairing/enroll` 只认服务器登记的码，客户端无法凭空伪造一个可用的）；脚本拿到码后**立即登录消费**，全程无需手工复制。管理员令牌经 `WEBCODEX_TOKEN` 环境变量传给子进程（不落命令行）。公开下载包里的 `webgpt.env` 只含占位符——真实令牌不要放进公开下载站。
 > 代价：服务器管理员令牌来到 Runner 机器（方案 B 的安全取舍）；专用单用途 Runner 可接受，否则用方案 A（服务器 `pairing create` 只出一次性码）。
 
 **要点 / 坑**

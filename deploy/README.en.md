@@ -21,7 +21,7 @@ Linux public server 66.92.18.39        Windows (Runner + project + Codex)
 | Machine | Copy from `deploy/` | Files |
 |---|---|---|
 | **Linux server** | `deploy/server/` | `webcodex.service`, `webcodex.socket`, `webcodex-runner.service`, `webcodex-tunnel.service`, `run-tunnel.sh`, `nginx.chatgpt.kunkun.chat.conf`, `webcodex.env.example`, `agent.toml.linux.example` |
-| **Windows Runner** | `deploy/client/` | `webgpt-client.bat`, `webgpt-client.ps1`, `webgpt-config.ps1`, `codex-acp-proxy.js`, `agent.toml.windows.example`, `CODEX_SYSTEM_PROMPT.md`, `AGENTS.md` |
+| **Windows Runner** | `deploy/client/` | `webgpt-client.bat`, `webgpt-client.ps1`, `webgpt-config.ps1`, `webgpt.env.example`, `codex-acp-proxy.js`, `agent.toml.windows.example`, `CODEX_SYSTEM_PROMPT.md`, `AGENTS.md` |
 
 > `server/` and `client/` have their own READMEs; upstream `deploy/*.example` are generic templates, not used here.
 

@@ -96,6 +96,37 @@ function Get-WcCodexCmd {
   return $null
 }
 
+# ---- webgpt.env (extracted config next to the launcher) ----
+
+function Get-WcEnvFilePath {
+  if ($env:WC_ENV_FILE) { return $env:WC_ENV_FILE }
+  $base = $null
+  try { $base = Split-Path -Parent $MyInvocation.MyCommand.Path } catch { }
+  if (-not $base) { $base = $PSScriptRoot }
+  return (Join-Path $base "webgpt.env")
+}
+
+function Read-WcEnvFile {
+  $p = Get-WcEnvFilePath
+  if (-not (Test-Path $p)) { return @{} }
+  $cfg = @{}
+  foreach ($line in (Get-Content $p -ErrorAction SilentlyContinue)) {
+    $line = $line.Trim()
+    if (-not $line -or $line.StartsWith('#')) { continue }
+    if ($line -notmatch '^([A-Za-z_][A-Za-z0-9_]*)\s*=') { continue }
+    $k = $Matches[1]
+    $v = $line.Substring($line.IndexOf('=') + 1).Trim()
+    $v = $v.Trim('"').Trim("'")
+    $cfg[$k] = $v
+  }
+  return $cfg
+}
+
+function Test-WcPlaceholder([string]$v) {
+  if (-not $v) { return $false }
+  return ($v -match '[<>]' -or $v -match '(?i)redacted|change|your|example|placeholder')
+}
+
 # ---- mode ----
 
 function Set-WcMode([string]$mode) {
@@ -204,19 +235,28 @@ function Set-WcAllowedRoot {
 function Pair-WcClient {
   param([string]$ClientId = $null)
   $cfg = Load-WcConfig
+  $envMap = Read-WcEnvFile
   $node = $env:WC_NODE
   $cli  = $env:WC_CLI
   if (-not $cli -or -not $node) {
     Write-Host "[x] WC_NODE/WC_CLI not set. Run via: webgpt-client.bat pair"
     return 1
   }
-  $server = [string]$cfg['server_url']
-  $user   = [string]$cfg['username']
+  # resolve server / username / admin token / allowed root:
+  #   1) config cache (set-server / set-server-token / set-allowed-root)
+  #   2) webgpt.env (extracted config, read here)
+  #   3) WC_SERVER_TOKEN env var
+  $server = [string]$cfg['server_url']; if (-not $server) { $server = [string]$envMap['WEBCODEX_SERVER_URL'] }
+  $user   = [string]$cfg['username'];   if (-not $user)   { $user   = [string]$envMap['WEBCODEX_USERNAME'] }
   $tok    = [string]$cfg['server_token']
+  if (-not $tok) { $tok = [string]$envMap['WEBCODEX_TOKEN'] }
   if (-not $tok -and $env:WC_SERVER_TOKEN) { $tok = $env:WC_SERVER_TOKEN }
-  if (-not $server) { Write-Host "[x] server_url not set. Use: webgpt-client.bat set-server <url> [username]"; return 1 }
-  if (-not $user)   { Write-Host "[x] username not set. Use: webgpt-client.bat set-server <url> <username>"; return 1 }
-  if (-not $tok)    { Write-Host "[x] server admin token not set. Use: webgpt-client.bat set-server-token <WEBCODEX_TOKEN>"; return 1 }
+  if (Test-WcPlaceholder $tok) { $tok = "" }
+  $allowedRoot = [string]$cfg['allowed_root']
+  if (-not $allowedRoot) { $allowedRoot = [string]$envMap['WEBCODEX_ALLOWED_ROOT'] }
+  if (-not $server) { Write-Host "[x] server_url not set. Use: webgpt-client.bat set-server <url> [username] or fill webgpt.env WEBCODEX_SERVER_URL"; return 1 }
+  if (-not $user)   { Write-Host "[x] username not set. Use: webgpt-client.bat set-server <url> <username> or fill webgpt.env WEBCODEX_USERNAME"; return 1 }
+  if (-not $tok)    { Write-Host "[x] server admin token not set. Use: webgpt-client.bat set-server-token <WEBCODEX_TOKEN>"; Write-Host "       or fill WEBCODEX_TOKEN in: $((Get-WcEnvFilePath))"; return 1 }
 
   # 1) client-side pairing create (token via env var, never on the command line)
   $env:WEBCODEX_TOKEN = $tok
@@ -249,7 +289,7 @@ function Pair-WcClient {
   # 2) auto login (consumes the code exactly once, right here)
   $loginArgs = @($node, $cli, 'login', $server, '--code', $pcode)
   if ($did) { $loginArgs += @('--device', $did) }
-  if ([string]$cfg['allowed_root']) { $loginArgs += @('--allowed-root', [string]$cfg['allowed_root']) }
+  if ($allowedRoot) { $loginArgs += @('--allowed-root', $allowedRoot) }
   Write-Host "[pair] logging in (code consumed on this machine)..."
   $out2 = (& $loginArgs 2>&1 | Out-String)
   $code2 = $LASTEXITCODE
@@ -346,6 +386,8 @@ function Add-WcMcp {
 function Show-WcConfig {
   $cfg = Load-WcConfig
   Write-Host ("[config] file: " + (Get-WcConfigPath))
+  $envFile = Get-WcEnvFilePath
+  Write-Host ("[config] webgpt.env: " + $envFile + " (" + $(if (Test-Path $envFile) { "present" } else { "missing" }) + ")")
   if ($cfg.Count -eq 0) { Write-Host "  (empty - nothing configured yet)"; return }
   Write-Host ("  server_url    = " + [string]$cfg['server_url'])
   Write-Host ("  username      = " + [string]$cfg['username'])
@@ -376,7 +418,7 @@ function Show-WcConfigHelp {
   Write-Host "  webgpt-client.bat show-apikey [--reveal]    # show cached API key (masked by default)"
   Write-Host "  webgpt-client.bat get-bearer                # print cached wc_pat (full)"
   Write-Host "  webgpt-client.bat set-tunnel <url> [bearer]"
-  Write-Host "  webgpt-client.bat set-server-token <t>      # cache server admin token (Option B)"
+  Write-Host "  webgpt-client.bat set-server-token <t>      # cache server admin token (or fill webgpt.env)"
   Write-Host "  webgpt-client.bat set-allowed-root <path>   # Runner allowed root (used by pair)"
   Write-Host "  webgpt-client.bat pair [client-id]          # CLI-side pairing create + auto login"
   Write-Host "  webgpt-client.bat                           # launch runner (applies cached config)"

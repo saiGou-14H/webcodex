@@ -22,7 +22,7 @@ Linux 公网服务器 66.92.18.39        Windows（Runner + 项目 + Codex）
 | 机器 | 复制 `deploy/` 里的路径 | 对应文件 |
 |---|---|---|
 | **Linux 服务器** | `deploy/server/` | `webcodex.service`、`webcodex.socket`、`webcodex-runner.service`、`webcodex-tunnel.service`、`run-tunnel.sh`、`nginx.chatgpt.kunkun.chat.conf`、`webcodex.env.example`、`agent.toml.linux.example` |
-| **Windows Runner** | `deploy/client/` | `webgpt-client.bat`、`webgpt-client.ps1`、`webgpt-config.ps1`、`codex-acp-proxy.js`、`agent.toml.windows.example`、`CODEX_SYSTEM_PROMPT.md`、`AGENTS.md` |
+| **Windows Runner** | `deploy/client/` | `webgpt-client.bat`、`webgpt-client.ps1`、`webgpt-config.ps1`、`webgpt.env.example`、`codex-acp-proxy.js`、`agent.toml.windows.example`、`CODEX_SYSTEM_PROMPT.md`、`AGENTS.md` |
 
 > `server/` 与 `client/` 各自 README 有更细说明；`deploy/*.example`（上游通用模板）与本实例无关，仅作参考。
 
