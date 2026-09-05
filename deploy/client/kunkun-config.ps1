@@ -12,13 +12,13 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-12"
+$script:WcScriptStamp = "2026-09-05-13"
 
 $script:WcConfigCommands = @(
   'menu', 'inject', 'reset', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
   'set-apikey', 'show-apikey', 'edit-apikey', 'get-bearer',
   'set-server', 'set-bootstrap', 'set-tunnel',
-  'set-server-token', 'set-allowed-root', 'pair', 'help'
+  'set-server-token', 'set-allowed-root', 'set-api-base', 'pair', 'help'
 )
 
 function Is-WcConfigCommand {
@@ -295,6 +295,7 @@ function Reset-WcAll {
     Write-Host "  2) remove the 'webcodex' MCP server from Codex (codex mcp remove)"
     Write-Host "  3) delete the local config cache %USERPROFILE%\.kunkun-tools\client.json (backup .bak)"
     Write-Host "  4) strip the [acp] section from agent.toml (backup .bak)"
+    Write-Host "  5) restore Codex config.toml from the pre-change backup (backup .bak)"
     $c = Read-Host "Proceed? (y/N)"
     if ($c -notmatch '^y') { Write-Host "[reset] aborted."; return 1 }
   }
@@ -337,6 +338,26 @@ function Reset-WcAll {
     Write-Host ("[reset] [acp] stripped from agent.toml (backup: " + $agent + ".bak)")
     $done++
   } else { Write-Host "[reset] agent.toml not found - skip" }
+  # 5) restore Codex config.toml from pre-change backup
+  $codexConfig = Get-WcCodexConfigPath
+  $orig = Get-WcCodexOriginalBackup
+  if (Test-Path $orig) {
+    if (Test-Path $codexConfig) {
+      Copy-Item $codexConfig ($codexConfig + ".pre-reset.bak") -Force -ErrorAction SilentlyContinue
+    }
+    $marker = [string](Get-Content $orig -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+    if ($marker -match 'no original Codex config') {
+      if (Test-Path $codexConfig) { Remove-Item $codexConfig -Force -ErrorAction SilentlyContinue }
+      Write-Host "[reset] codex config.toml removed (no original existed before applying)"
+    } else {
+      if (-not (Test-Path (Split-Path $codexConfig -Parent))) { New-Item -ItemType Directory -Path (Split-Path $codexConfig -Parent) -Force | Out-Null }
+      Copy-Item $orig $codexConfig -Force
+      Write-Host ("[reset] codex config.toml restored from original backup -> " + $codexConfig)
+    }
+    $done++
+  } else {
+    Write-Host "[reset] no codex config.toml backup - skip"
+  }
   Write-Host ("[reset] done (" + $done + " items). To set up fresh: run 'pair' then 'add-mcp'.")
   return 0
 }
@@ -360,7 +381,67 @@ function Show-WcMode {
   Write-Host ("[mode] " + $mode)
 }
 
-# ---- api key (cached locally) ----
+# ---- api key (cached locally + applied to Codex desktop config) ----
+
+function Get-WcCodexConfigPath {
+  $home = $env:CODEX_HOME
+  if (-not $home) { $home = Join-Path $env:USERPROFILE ".codex" }
+  return (Join-Path $home "config.toml")
+}
+
+function Get-WcCodexOriginalBackup {
+  return (Join-Path (Join-Path (Join-Path $env:USERPROFILE ".kunkun-tools") "backup") (Join-Path "codex" "config.toml.original"))
+}
+
+function Backup-WcCodexConfigOnce([string]$configPath) {
+  $orig = Get-WcCodexOriginalBackup
+  if (Test-Path $orig) { return }
+  $bd = Split-Path $orig -Parent
+  if (-not (Test-Path $bd)) { New-Item -ItemType Directory -Path $bd -Force | Out-Null }
+  if (Test-Path $configPath) {
+    Copy-Item $configPath $orig -Force
+    Write-Host ("[codex] original config.toml backed up -> " + $orig)
+  } else {
+    Set-Content $orig "## kunkun-tools: no original Codex config.toml (created on first apply)" -Encoding UTF8
+    Write-Host "[codex] no original config.toml - recorded 'none' so reset can remove ours"
+  }
+}
+
+# Apply the cached api key + base url as Codex's model provider ('kunkun').
+# The key itself is NOT written into config.toml: Codex reads it from the
+# OPENAI_API_KEY env var (env_key) that the launcher exports.
+function Apply-WcCodexConfig {
+  $cfg = Load-WcConfig
+  $base = [string]$cfg['api_base_url']
+  if (-not $base) { $base = $env:OPENAI_BASE_URL }
+  if (-not $base) {
+    Write-Host "[codex] api_base_url not set - skipping Codex config edit (use: kunkun-tools.bat set-api-base <url>)"
+    Write-Host "        (OPENAI_API_KEY is still exported at launch; Codex only needs the provider if it has a custom base_url)"
+    return
+  }
+  $codexConfig = Get-WcCodexConfigPath
+  Backup-WcCodexConfigOnce $codexConfig
+  $raw = ""
+  if (Test-Path $codexConfig) { $raw = Get-Content $codexConfig -Raw -Encoding UTF8 }
+  # strip our previous edits (idempotent): model_provider line + [model_providers.kunkun] block
+  $raw = [regex]::Replace($raw, '(?ms)^\s*model_provider\s*=.*?(\r?\n){0,1}', '')
+  $raw = [regex]::Replace($raw, '(?ms)^\[model_providers\.kunkun\][^\[]*', '')
+  $baseEsc = $base -replace '\\', '\\'
+  $block = "`r`nmodel_provider = `"kunkun`"`r`n`r`n[model_providers.kunkun]`r`nname = `"kunkun`"`r`nbase_url = `"$baseEsc`"`r`nenv_key = `"OPENAI_API_KEY`"`r`nwire_api = `"responses`"`r`n"
+  $final = ($raw.TrimEnd() + $block)
+  if (-not (Test-Path (Split-Path $codexConfig -Parent))) { New-Item -ItemType Directory -Path (Split-Path $codexConfig -Parent) -Force | Out-Null }
+  [System.IO.File]::WriteAllText($codexConfig, $final, (New-Object System.Text.UTF8Encoding($false)))
+  Write-Host ("[codex] applied provider 'kunkun' -> " + $codexConfig)
+  Write-Host ("        base_url=" + $base + ", key from env OPENAI_API_KEY (original backed up; reset restores)")
+}
+
+function Set-WcApiBase {
+  param([string]$Url)
+  if (-not $Url) { Write-Host "[x] usage: set-api-base <url>"; return }
+  Set-WcField 'api_base_url' $Url.Trim()
+  Write-Host ("[api-base] " + $Url.Trim())
+  Apply-WcCodexConfig
+}
 
 function Set-WcApiKey {
   param([string]$Value = $null, [switch]$Edit)
@@ -380,6 +461,7 @@ function Set-WcApiKey {
   if (-not $val) { Write-Host "[x] no API key provided"; return }
   Set-WcField 'apikey' $val
   Write-Host ("[apikey] saved and cached locally (masked: " + (Mask-Secret $val) + ")")
+  Apply-WcCodexConfig
 }
 
 function Show-WcApiKey {
@@ -691,6 +773,7 @@ function Show-WcConfigHelp {
   Write-Host "  kunkun-tools.bat set-tunnel <url> [bearer]"
   Write-Host "  kunkun-tools.bat set-server-token <t>      # cache server admin token (or fill kunkun-tools.env)"
   Write-Host "  kunkun-tools.bat set-allowed-root <path>   # Runner allowed root (used by pair)"
+  Write-Host "  kunkun-tools.bat set-api-base <url>        # Codex model base URL (applies to codex config + backups original)"
   Write-Host "  kunkun-tools.bat pair [client-id]          # CLI-side pairing create + auto login"
   Write-Host "  kunkun-tools.bat                           # interactive menu (no args)"
 }
@@ -788,6 +871,10 @@ function Invoke-WcConfigCommand {
     }
     'set-allowed-root' {
       Set-WcAllowedRoot -Root $(if ($Rest.Count -gt 0) { $Rest[0] } else { $null })
+      return 0
+    }
+    'set-api-base' {
+      Set-WcApiBase -Url $(if ($Rest.Count -gt 0) { $Rest[0] } else { $null })
       return 0
     }
     'pair' {
