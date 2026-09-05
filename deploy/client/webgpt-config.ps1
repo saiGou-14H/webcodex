@@ -170,6 +170,21 @@ function Invoke-NativeCapture {
   }
 }
 
+function Invoke-WcWithRetry {
+  param([string]$Exe, [string[]]$Args = @(), [int]$TimeoutMs = 120000, [int]$Retries = 3)
+  $attempt = 0
+  while ($true) {
+    $attempt++
+    $r = Invoke-NativeCapture -Exe $Exe -Args $Args -TimeoutMs $TimeoutMs
+    if ($r.timedOut -and $attempt -lt $Retries) {
+      Write-Host ("[retry] attempt " + $attempt + "/" + $Retries + " timed out - reconnecting (the CLI has no HTTP timeout; retries usually win)...")
+      Start-Sleep -Seconds 3
+      continue
+    }
+    return $r
+  }
+}
+
 # Extra CLI proxy flags from env/config:
 #   WC_PROXY=http://host:port  -> --proxy <url>
 #   WC_NO_PROXY=1              -> --no-system-proxy (force direct)
@@ -340,7 +355,7 @@ function Pair-WcClient {
   if ($ClientId) { $pairCmd += @('--client-id', $ClientId) }
   Write-Host ("[pair] minting one-time code via server: " + $server)
   try {
-    $r = Invoke-NativeCapture -Exe $pairCmd[0] -Args $pairCmd[1..($pairCmd.Count - 1)]
+    $r = Invoke-WcWithRetry -Exe $pairCmd[0] -Args $pairCmd[1..($pairCmd.Count - 1)]
     $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_TOKEN -ErrorAction SilentlyContinue
@@ -367,7 +382,7 @@ function Pair-WcClient {
   if ($did) { $loginCmd += @('--device', $did) }
   if ($allowedRoot) { $loginCmd += @('--allowed-root', $allowedRoot) }
   Write-Host "[pair] logging in (code consumed on this machine)..."
-  $r2 = Invoke-NativeCapture -Exe $loginCmd[0] -Args $loginCmd[1..($loginCmd.Count - 1)]
+  $r2 = Invoke-WcWithRetry -Exe $loginCmd[0] -Args $loginCmd[1..($loginCmd.Count - 1)]
   $out2 = $r2.out; $err2 = $r2.err; $code2 = $r2.code
   if (($out2 + $err2) -match 'Already logged in') {
     Write-Host "[pair] already logged in to $server as $user — nothing to change."
@@ -451,7 +466,7 @@ function Add-WcMcp {
       '--server-url', $server, '--username', $user,
       '--credential-env', 'WEBCODEX_ACCOUNT_CREDENTIAL', '--name', 'webgpt-mcp', '--scopes', $scopesCsv)
     $mcpArgs += @(Get-WcCliProxyArgs)
-    $r = Invoke-NativeCapture -Exe $node -Args $mcpArgs
+    $r = Invoke-WcWithRetry -Exe $node -Args $mcpArgs
     $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_ACCOUNT_CREDENTIAL -ErrorAction SilentlyContinue
