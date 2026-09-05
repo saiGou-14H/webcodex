@@ -20,8 +20,16 @@ Windows Runner（执行项目 + Coding Agent）所在机器上的脚本（已脱
 2. `D:\WebGpt\AGENTS.md`（推荐，把 `deploy/client/AGENTS.md` 复制过去）。
 3. `D:\WebGpt\CODEX_SYSTEM_PROMPT.md`（自动只提取里面 ```markdown``` 代码块，忽略周边说明文字）。
 
-**说明：**
+**不会重复注入（幂等、非破坏）：**
 
-- 找不到任何提示词文件时，脚本会打印提示并**照常启动**（不会失败）——注入是可选增强。
-- 注入写的是 `AGENTS.md`（默认）；若 Codex 主目录里已有 `AGENTS.override.md`，它会优先于 `AGENTS.md`，此时可改名或用 `%USERPROFILE%\.codex\AGENTS override.md` 直接顶替你自己的内容。
+- 每次只选**一个**来源（从上到下第一个存在的），只写一次。
+- 注入内容被包在一对 `<!-- webcodex-agents:start -->` / `<!-- webcodex-agents:end -->` 标记里。重复运行时**替换**旧块，绝不叠加。
+- 若你的 `AGENTS.md` 里原本已有自己的全局指令，脚本会**保留它们**，只在我们自己的标记块里注入 WebCodex 规则（非破坏，原内容不丢）。
+- 找不到任何提示词文件时，脚本打印提示并**照常启动**（注入是可选增强，不影响启动）。
+
+**关键：请只留一个注入点。** Codex 会把**全局 `AGENTS.md` + 项目仓库里的 `AGENTS.md`** 全部拼接起来，所以你**不要**再把同一份 `AGENTS.md` 复制进项目根目录，也**不要**在会话首条指令里重复粘贴——否则模型会读到两份 44 工具清单。
+
+**其他注意：**
+
+- 注入写的是 `AGENTS.md`（默认）；若 Codex 主目录里已有 `AGENTS.override.md`，它会优先于 `AGENTS.md`，此时可改名或把我们的内容合进 `%USERPROFILE%\.codex\AGENTS.override.md`。
 - 别把真实 token/凭据写进提示词文件——脚本只会原样复制到 AGENTS.md。

@@ -98,9 +98,26 @@ if ($injectSrc -and (Test-Path $injectSrc)) {
   $dest = Join-Path $env:CODEX_HOME "AGENTS.md"
   $content = Get-InjectContent $injectSrc
   $lineCount = ($content -split "`n").Count
-  [System.IO.File]::WriteAllText($dest, $content, (New-Object System.Text.UTF8Encoding($false)))
+
+  # Marker-delimited block so injection is idempotent and non-destructive:
+  #   - we never inject ourselves twice (a previous injected block is replaced)
+  #   - any pre-existing global instructions the user still has in AGENTS.md are preserved
+  $startMark = "<!-- webcodex-agents:start -->"
+  $endMark   = "<!-- webcodex-agents:end -->"
+  $block     = $startMark + "`r`n" + $content + "`r`n" + $endMark
+  $pattern   = '(?s)' + [regex]::Escape($startMark) + '.*?' + [regex]::Escape($endMark)
+
+  $existing = ""
+  if (Test-Path $dest) {
+    $existing = [System.IO.File]::ReadAllText($dest)
+    $existing = ($existing -replace $pattern, '').TrimEnd()
+  }
+  if ($existing) { $new = $existing + "`r`n`r`n" + $block + "`r`n" }
+  else           { $new = $block + "`r`n" }
+  [System.IO.File]::WriteAllText($dest, $new, (New-Object System.Text.UTF8Encoding($false)))
+
   Write-Host "[7b] injected Codex instructions   -> $dest"
-  Write-Host "        (from $injectSrc, $lineCount lines)"
+  Write-Host "        (from $injectSrc, $lineCount lines, idempotent + non-destructive)"
 } else {
   Write-Host "[7b] no instructions file found — skipping prompt injection"
   Write-Host "        (set WC_INSTRUCTIONS_FILE or drop AGENTS.md next to this script)"
