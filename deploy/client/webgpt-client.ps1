@@ -66,7 +66,7 @@ Write-Host "[5] codex      = $codexcmd"
 if (-not (Test-Path $agent)) { Write-Host "[x] agent.toml NOT found: $agent"; exit 1 }
 
 # ---- rewrite [acp] section ----
-$raw  = Get-Content $agent -Raw
+$raw  = Get-Content $agent -Raw -Encoding UTF8
 $raw  = [regex]::Replace($raw, '(?s)\r?\n\[acp\].*$', '')
 $nod  = $node  -replace '\\','\\'
 $pxy  = $proxy -replace '\\','\\'
@@ -101,7 +101,7 @@ Write-Host "    CODEX_CMD=$env:CODEX_CMD"
 # AGENTS.md, then CODEX_SYSTEM_PROMPT.md next to this script. If the source is
 # CODEX_SYSTEM_PROMPT.md (a doc with surrounding prose), extract the ```markdown block.
 function Get-InjectContent([string]$path) {
-  $raw = Get-Content $path -Raw
+  $raw = Get-Content $path -Raw -Encoding UTF8
   $m = [regex]::Match($raw, '(?s)```markdown\s*\r?\n(.*?)\r?\n```')
   if ($m.Success) { return $m.Groups[1].Value.TrimEnd() }
   return $raw.TrimEnd()

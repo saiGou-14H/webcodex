@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-9"
+$script:WcScriptStamp = "2026-09-05-10"
 
 $script:WcConfigCommands = @(
   'menu', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
@@ -48,7 +48,7 @@ function ConvertFrom-JsonAsHashtable($obj) {
 function Load-WcConfig {
   $p = Get-WcConfigPath
   if (-not (Test-Path $p)) { return @{} }
-  try { return ConvertFrom-JsonAsHashtable (Get-Content $p -Raw | ConvertFrom-Json) } catch { return @{} }
+  try { return ConvertFrom-JsonAsHashtable (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return @{} }
 }
 
 function Save-WcConfig {
@@ -114,7 +114,7 @@ function Read-WcEnvFile {
   $p = Get-WcEnvFilePath
   if (-not (Test-Path $p)) { return @{} }
   $cfg = @{}
-  foreach ($line in (Get-Content $p -ErrorAction SilentlyContinue)) {
+  foreach ($line in (Get-Content $p -Encoding UTF8 -ErrorAction SilentlyContinue)) {
     $line = $line.Trim()
     if (-not $line -or $line.StartsWith('#')) { continue }
     if ($line -notmatch '^([A-Za-z_][A-Za-z0-9_]*)\s*=') { continue }
@@ -160,9 +160,9 @@ function Invoke-NativeCapture {
     $ErrorActionPreference = $prevEAP
   }
   $stdout = ""
-  if (Test-Path $outFile) { $stdout = [string](Get-Content $outFile -Raw -ErrorAction SilentlyContinue); Remove-Item $outFile -Force -ErrorAction SilentlyContinue }
+  if (Test-Path $outFile) { $stdout = [string](Get-Content $outFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue); Remove-Item $outFile -Force -ErrorAction SilentlyContinue }
   $stderr = ""
-  if (Test-Path $errFile) { $stderr = [string](Get-Content $errFile -Raw -ErrorAction SilentlyContinue); Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
+  if (Test-Path $errFile) { $stderr = [string](Get-Content $errFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue); Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
   return @{ out = $stdout; err = $stderr; code = $code; timedOut = $false }
 }
 
