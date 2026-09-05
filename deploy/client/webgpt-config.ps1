@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-7"
+$script:WcScriptStamp = "2026-09-05-8"
 
 $script:WcConfigCommands = @(
   'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
@@ -182,15 +182,17 @@ function Invoke-WcWithRetry {
 }
 
 # Extra CLI proxy flags from env/config:
-#   WC_PROXY=http://host:port  -> --proxy <url>
-#   WC_NO_PROXY=1              -> --no-system-proxy (force direct)
+#   WC_CLI_PROXY=http://host:port  -> --proxy <url>
+#   WC_CLI_NO_PROXY=1              -> --no-system-proxy (force direct)
+# NOTE: do NOT read $env:WC_PROXY - the launcher already uses it for the
+# ACP proxy script path (codex-acp-proxy.js), which is NOT an HTTP proxy.
 function Get-WcCliProxyArgs {
   $cfg = Load-WcConfig
-  $proxy = $env:WC_PROXY
-  if (-not $proxy) { $proxy = [string]$cfg['proxy'] }
+  $proxy = $env:WC_CLI_PROXY
+  if (-not $proxy) { $proxy = [string]$cfg['cli_proxy'] }
   if ($proxy) { return @('--proxy', $proxy) }
-  $noProxy = $env:WC_NO_PROXY
-  if (-not $noProxy) { $noProxy = [string]$cfg['no_proxy'] }
+  $noProxy = $env:WC_CLI_NO_PROXY
+  if (-not $noProxy) { $noProxy = [string]$cfg['cli_no_proxy'] }
   if ($noProxy -and ($noProxy -eq '1' -or $noProxy -eq 'true' -or $noProxy -eq 'yes')) { return @('--no-system-proxy') }
   return @()
 }
