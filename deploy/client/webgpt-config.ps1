@@ -127,6 +127,22 @@ function Test-WcPlaceholder([string]$v) {
   return ($v -match '[<>]' -or $v -match '(?i)redacted|change|your|example|placeholder')
 }
 
+# Run a native command capturing stdout+stderr without the PS 5.1 trap where
+# '$ErrorActionPreference=Stop' turns native stderr into a terminating
+# NativeCommandError when merged with 2>&1. stderr goes to a temp file.
+function Invoke-NativeCapture {
+  param([string]$Exe, [string[]]$Args)
+  $errFile = Join-Path $env:TEMP ("wcerr_" + [guid]::NewGuid().ToString("N") + ".txt")
+  $stdout = (& $Exe @Args 2> $errFile | Out-String)
+  $code = $LASTEXITCODE
+  $stderr = ""
+  if (Test-Path $errFile) {
+    $stderr = [string](Get-Content $errFile -Raw -ErrorAction SilentlyContinue)
+    Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+  }
+  return @{ out = $stdout; err = $stderr; code = $code }
+}
+
 # ---- mode ----
 
 function Set-WcMode([string]$mode) {
@@ -258,6 +274,15 @@ function Pair-WcClient {
   if (-not $user)   { Write-Host "[x] username not set. Use: webgpt-client.bat set-server <url> <username> or fill webgpt.env WEBCODEX_USERNAME"; return 1 }
   if (-not $tok)    { Write-Host "[x] server admin token not set. Use: webgpt-client.bat set-server-token <WEBCODEX_TOKEN>"; Write-Host "       or fill WEBCODEX_TOKEN in: $((Get-WcEnvFilePath))"; return 1 }
 
+  # already logged in? (agent.toml exists for this server/user)
+  $hostPath = $server -replace '^https?://', ''
+  $agentPath = Join-Path (Join-Path (Join-Path $env:APPDATA "webcodex") $hostPath) (Join-Path $user "agent.toml")
+  if (Test-Path $agentPath) {
+    Write-Host ("[pair] already logged in to " + $server + " as " + $user + " (agent.toml: " + $agentPath + ")")
+    Write-Host "       Nothing to do. To re-enroll: delete that agent.toml and re-run pair."
+    return 0
+  }
+
   # 1) client-side pairing create (token via env var, never on the command line)
   $env:WEBCODEX_TOKEN = $tok
   $pairCmd = @($node, $cli, 'pairing', 'create', '--server-url', $server, '--username', $user,
@@ -265,23 +290,21 @@ function Pair-WcClient {
   if ($ClientId) { $pairCmd += @('--client-id', $ClientId) }
   Write-Host ("[pair] minting one-time code via server: " + $server)
   try {
-    $pairExe  = $pairCmd[0]
-    $pairRest = $pairCmd[1..($pairCmd.Count - 1)]
-    $out = (& $pairExe @pairRest 2>&1 | Out-String)
-    $code = $LASTEXITCODE
+    $r = Invoke-NativeCapture -Exe $pairCmd[0] -Args $pairCmd[1..($pairCmd.Count - 1)]
+    $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_TOKEN -ErrorAction SilentlyContinue
   }
   if ($code -ne 0) {
     Write-Host "[x] pairing create failed (exit $code):"
-    Write-Host $out
+    Write-Host ($out + $r.err)
     return 1
   }
   $pc = $null
   try { $pc = $out.Trim() | ConvertFrom-Json } catch { }
   if (-not $pc -or -not $pc.pairing_code) {
     Write-Host "[x] could not parse pairing code from output:"
-    Write-Host $out
+    Write-Host ($out + $r.err)
     return 1
   }
   $pcode = [string]$pc.pairing_code
@@ -289,24 +312,25 @@ function Pair-WcClient {
   Write-Host ("[pair] one-time code minted (masked: " + (Mask-Secret $pcode) + "), expires " + [string]$pc.expires_at)
 
   # 2) auto login (consumes the code exactly once, right here)
-  $loginArgs = @($node, $cli, 'login', $server, '--code', $pcode)
-  if ($did) { $loginArgs += @('--device', $did) }
-  if ($allowedRoot) { $loginArgs += @('--allowed-root', $allowedRoot) }
+  $loginCmd = @($node, $cli, 'login', $server, '--code', $pcode)
+  if ($did) { $loginCmd += @('--device', $did) }
+  if ($allowedRoot) { $loginCmd += @('--allowed-root', $allowedRoot) }
   Write-Host "[pair] logging in (code consumed on this machine)..."
-  $loginExe  = $loginArgs[0]
-  $loginRest = $loginArgs[1..($loginArgs.Count - 1)]
-  $out2 = (& $loginExe @loginRest 2>&1 | Out-String)
-  $code2 = $LASTEXITCODE
+  $r2 = Invoke-NativeCapture -Exe $loginCmd[0] -Args $loginCmd[1..($loginCmd.Count - 1)]
+  $out2 = $r2.out; $err2 = $r2.err; $code2 = $r2.code
+  if (($out2 + $err2) -match 'Already logged in') {
+    Write-Host "[pair] already logged in to $server as $user — nothing to change."
+    Write-Host ("       agent.toml: " + $agentPath)
+    return 0
+  }
   if ($code2 -ne 0) {
     Write-Host "[x] login failed (exit $code2):"
-    Write-Host $out2
+    Write-Host ($out2 + $err2)
     Write-Host "(!) the one-time code was consumed; re-run: webgpt-client.bat pair"
     return 1
   }
   if ($out2) { Write-Host $out2 }
-  $hostPath = $server -replace '^https?://', ''
-  $agent = Join-Path (Join-Path (Join-Path $env:APPDATA "webcodex") $hostPath) (Join-Path $user "agent.toml")
-  Write-Host ("[pair] done. agent.toml = " + $agent)
+  Write-Host ("[pair] done. agent.toml = " + $agentPath)
   Write-Host "       Next: run 'webgpt-client.bat' (no args) to start the Runner."
   return 0
 }
@@ -334,7 +358,9 @@ function Apply-WcMcpConfig {
     return
   }
   Write-Host ("[mcp] codex mcp add webcodex --url " + $url + " --bearer-token-env-var WEBCODEX_BEARER")
-  & $codex mcp add webcodex --url $url --bearer-token-env-var WEBCODEX_BEARER 2>&1 | Out-String | Write-Host
+  $rc = Invoke-NativeCapture -Exe $codex -Args @('mcp', 'add', 'webcodex', '--url', $url, '--bearer-token-env-var', 'WEBCODEX_BEARER')
+  if ($rc.out) { Write-Host $rc.out }
+  if ($rc.err) { Write-Host $rc.err }
 }
 
 # ---- add-mcp: mint wc_pat_xxx via `webcodex tokens create-local` + configure Codex MCP ----
@@ -358,21 +384,22 @@ function Add-WcMcp {
   Write-Host ("[mcp] minting token: webcodex tokens create-local (server=" + $server + ", user=" + $user + ")")
   $env:WEBCODEX_ACCOUNT_CREDENTIAL = $boot
   try {
-    $out = (& $node $cli tokens create-local --server-url $server --username $user `
-      --credential-env WEBCODEX_ACCOUNT_CREDENTIAL --name webgpt-mcp --scopes $scopesCsv 2>&1 | Out-String)
-    $code = $LASTEXITCODE
+    $r = Invoke-NativeCapture -Exe $node -Args @($cli, 'tokens', 'create-local',
+      '--server-url', $server, '--username', $user,
+      '--credential-env', 'WEBCODEX_ACCOUNT_CREDENTIAL', '--name', 'webgpt-mcp', '--scopes', $scopesCsv)
+    $out = $r.out; $code = $r.code
   } finally {
     Remove-Item Env:\WEBCODEX_ACCOUNT_CREDENTIAL -ErrorAction SilentlyContinue
   }
   if ($code -ne 0) {
     Write-Host "[x] tokens create-local failed (exit $code):"
-    Write-Host $out
+    Write-Host ($out + $r.err)
     return 1
   }
   $tok = Get-WcTokenFromOutput $out
   if (-not $tok) {
     Write-Host "[x] could not parse wc_pat from output:"
-    Write-Host $out
+    Write-Host ($out + $r.err)
     return 1
   }
   $cfg['mcp'] = @{ url = ($server.TrimEnd('/') + '/mcp'); bearer = $tok; bearer_env = 'WEBCODEX_BEARER' }
