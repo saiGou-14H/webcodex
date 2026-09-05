@@ -4,12 +4,20 @@ $ErrorActionPreference = "Stop"
 $cfgLib = Join-Path $PSScriptRoot "webgpt-config.ps1"
 if (Test-Path $cfgLib) { . $cfgLib }
 
-# ---- subcommand dispatch: config commands first, then legacy instructions-file arg ----
+# ---- subcommand dispatch: config commands first, then interactive menu, then legacy arg ----
 if ($args.Count -gt 0 -and (Get-Command Is-WcConfigCommand -ErrorAction SilentlyContinue) -and (Is-WcConfigCommand $args[0])) {
   $rest = @(); if ($args.Count -gt 1) { $rest = $args[1..($args.Count - 1)] }
   exit (Invoke-WcConfigCommand -Command $args[0] -Rest $rest)
 }
-if ($args.Count -gt 0) { $env:WC_INSTRUCTIONS_FILE = $args[0] }
+if ($args.Count -eq 0) {
+  # interactive menu (bt-panel style); option (1) continues into the launch chain
+  if (Get-Command Show-WcMenu -ErrorAction SilentlyContinue) {
+    $menuResult = Show-WcMenu
+    if ($menuResult -ne 'launch') { exit }
+  }
+} else {
+  $env:WC_INSTRUCTIONS_FILE = $args[0]
+}
 
 # ---- [0] kill leftover WebGpt/Codex processes from a previous run ----
 Write-Host "[0] killing previous WebGpt/Codex processes..."

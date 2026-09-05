@@ -11,10 +11,10 @@ $ErrorActionPreference = "Stop"
 
 # Version stamp: printed by add-mcp/pair so we can tell which script build
 # actually runs on a machine (update via the download bundle).
-$script:WcScriptStamp = "2026-09-05-8"
+$script:WcScriptStamp = "2026-09-05-9"
 
 $script:WcConfigCommands = @(
-  'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
+  'menu', 'show-config', 'add-mcp', 'mcp', 'tunnel', 'mode',
   'set-apikey', 'show-apikey', 'edit-apikey', 'get-bearer',
   'set-server', 'set-bootstrap', 'set-tunnel',
   'set-server-token', 'set-allowed-root', 'pair', 'help'
@@ -555,6 +555,7 @@ function Show-WcConfig {
 
 function Show-WcConfigHelp {
   Write-Host "WebGpt client config commands:"
+  Write-Host "  webgpt-client.bat menu                       # interactive menu (same as no args)"
   Write-Host "  webgpt-client.bat show-config               # show cached config (secrets masked)"
   Write-Host "  webgpt-client.bat set-server <url> [username]"
   Write-Host "  webgpt-client.bat set-bootstrap <wc_pat>    # account credential used to mint tokens"
@@ -569,12 +570,54 @@ function Show-WcConfigHelp {
   Write-Host "  webgpt-client.bat set-server-token <t>      # cache server admin token (or fill webgpt.env)"
   Write-Host "  webgpt-client.bat set-allowed-root <path>   # Runner allowed root (used by pair)"
   Write-Host "  webgpt-client.bat pair [client-id]          # CLI-side pairing create + auto login"
-  Write-Host "  webgpt-client.bat                           # launch runner (applies cached config)"
+  Write-Host "  webgpt-client.bat                           # interactive menu (no args)"
+}
+
+# Interactive menu (bt-panel style). Returns 'launch' to continue into the
+# runner start chain, 'exit' to quit, or loops until the user chooses.
+function Show-WcMenu {
+  while ($true) {
+    Write-Host ""
+    Write-Host "==================================================="
+    Write-Host " WebGpt Client -- Windows Runner + Codex"
+    Write-Host "==================================================="
+    Write-Host " (1) Start Runner (launch)"
+    Write-Host " (2) One-shot setup / login (pair)"
+    Write-Host " (3) Add MCP config (add-mcp)"
+    Write-Host " (4) Set / edit API key (edit-apikey)"
+    Write-Host " (5) Connection mode: mcp / tunnel"
+    Write-Host " (6) Show config (masked)"
+    Write-Host " (7) Show MCP bearer (get-bearer)"
+    Write-Host " (8) Show API key (show-apikey)"
+    Write-Host " (9) Command help"
+    Write-Host " (0) Exit"
+    Write-Host "==================================================="
+    $ans = Read-Host "Please enter a number"
+    $ans = ($ans -as [int])
+    switch ($ans) {
+      1 { Write-Host "=> Starting Runner..."; return "launch" }
+      2 { $null = Invoke-WcConfigCommand -Command 'pair' }
+      3 { $null = Invoke-WcConfigCommand -Command 'add-mcp' }
+      4 { $null = Invoke-WcConfigCommand -Command 'edit-apikey' }
+      5 {
+        $m = Read-Host "mode (mcp/tunnel)"
+        if ($m) { $null = Invoke-WcConfigCommand -Command 'mode' -Rest @($m.Trim()) }
+      }
+      6 { $null = Invoke-WcConfigCommand -Command 'show-config' }
+      7 { $null = Invoke-WcConfigCommand -Command 'get-bearer' }
+      8 { $null = Invoke-WcConfigCommand -Command 'show-apikey' }
+      9 { $null = Invoke-WcConfigCommand -Command 'help' }
+      0 { Write-Host "Bye."; return "exit" }
+      default { Write-Host "[x] invalid choice: $ans" }
+    }
+    $null = Read-Host "Press Enter to go back to the menu"
+  }
 }
 
 function Invoke-WcConfigCommand {
   param([string]$Command, [string[]]$Rest = @())
   switch ($Command) {
+    'menu'        { $r = Show-WcMenu; if ($r -eq 'launch') { Write-Host "To launch the Runner, run 'webgpt-client.bat' with no args." }; return 0 }
     'help'        { Show-WcConfigHelp; return 0 }
     'show-config' { Show-WcConfig; return 0 }
     'add-mcp'     { return (Add-WcMcp) }
