@@ -339,12 +339,15 @@ function Pair-WcClient {
 
 function Get-WcEffectiveMcpUrl {
   $cfg = Load-WcConfig
+  $envMap = Read-WcEnvFile
   if ([string]$cfg['mode'] -eq 'tunnel') {
     if ($cfg['tunnel'] -and [string]$cfg['tunnel'].url) { return [string]$cfg['tunnel'].url }
   } else {
     if ($cfg['mcp'] -and [string]$cfg['mcp'].url) { return [string]$cfg['mcp'].url }
   }
-  if ([string]$cfg['server_url']) { return ([string]$cfg['server_url']).TrimEnd('/') + '/mcp' }
+  $server = [string]$cfg['server_url']
+  if (-not $server) { $server = [string]$envMap['WEBCODEX_SERVER_URL'] }
+  if ($server) { return $server.TrimEnd('/') + '/mcp' }
   return $null
 }
 
@@ -367,6 +370,7 @@ function Apply-WcMcpConfig {
 
 function Add-WcMcp {
   $cfg = Load-WcConfig
+  $envMap = Read-WcEnvFile
   $node = $env:WC_NODE
   $cli  = $env:WC_CLI
   if (-not $cli -or -not $node) {
@@ -374,11 +378,19 @@ function Add-WcMcp {
     return 1
   }
   $server = [string]$cfg['server_url']
-  $user   = [string]$cfg['username']
-  $boot   = [string]$cfg['bootstrap']
-  if (-not $server) { Write-Host "[x] server_url not set. Use: webgpt-client.bat set-server <server-url> [username]"; return 1 }
-  if (-not $user)   { Write-Host "[x] username not set. Use: webgpt-client.bat set-server <server-url> <username>"; return 1 }
-  if (-not $boot)   { Write-Host "[x] bootstrap account credential not set. Use: webgpt-client.bat set-bootstrap <wc_pat>"; return 1 }
+  if (-not $server) { $server = [string]$envMap['WEBCODEX_SERVER_URL'] }
+  $user = [string]$cfg['username']
+  if (-not $user) { $user = [string]$envMap['WEBCODEX_USERNAME'] }
+  # credential used by tokens create-local (register_hash needs admin-or-self):
+  #   1) set-bootstrap value  2) webgpt.env WEBCODEX_BOOTSTRAP  3) server admin token
+  $boot = [string]$cfg['bootstrap']
+  if (-not $boot) { $boot = [string]$envMap['WEBCODEX_BOOTSTRAP'] }
+  if (-not $boot) { $boot = [string]$cfg['server_token'] }
+  if (-not $boot) { $boot = [string]$envMap['WEBCODEX_TOKEN'] }
+  if (Test-WcPlaceholder $boot) { $boot = "" }
+  if (-not $server) { Write-Host "[x] server_url not set. Use: webgpt-client.bat set-server <server-url> [username] OR fill webgpt.env WEBCODEX_SERVER_URL"; return 1 }
+  if (-not $user)   { Write-Host "[x] username not set. Use: webgpt-client.bat set-server <server-url> <username> OR fill webgpt.env WEBCODEX_USERNAME"; return 1 }
+  if (-not $boot)   { Write-Host "[x] no account/admin credential for token mint. Use: webgpt-client.bat set-bootstrap <wc_pat> OR fill webgpt.env WEBCODEX_BOOTSTRAP / WEBCODEX_TOKEN"; return 1 }
   $scopesCsv = Get-WcDefaultScopesCsv
   if ($cfg['scopes'] -and ($cfg['scopes'] -is [array])) { $scopesCsv = ($cfg['scopes'] -join ',') }
   Write-Host ("[mcp] minting token: webcodex tokens create-local (server=" + $server + ", user=" + $user + ")")
@@ -416,6 +428,7 @@ function Add-WcMcp {
 
 function Show-WcConfig {
   $cfg = Load-WcConfig
+  $envMap = Read-WcEnvFile
   Write-Host ("[config] file: " + (Get-WcConfigPath))
   $envFile = Get-WcEnvFilePath
   Write-Host ("[config] webgpt.env: " + $envFile + " (" + $(if (Test-Path $envFile) { "present" } else { "missing" }) + ")")
@@ -434,6 +447,12 @@ function Show-WcConfig {
   }
   Write-Host ("  apikey        = " + (Mask-Secret ([string]$cfg['apikey'])))
   Write-Host ("  api_base_url  = " + [string]$cfg['api_base_url'])
+  $envKeys = @()
+  foreach ($k in @('WEBCODEX_SERVER_URL', 'WEBCODEX_USERNAME', 'WEBCODEX_BOOTSTRAP', 'WEBCODEX_ALLOWED_ROOT')) {
+    if ([string]$envMap[$k]) { $envKeys += $k }
+  }
+  if ([string]$envMap['WEBCODEX_TOKEN'] -and -not (Test-WcPlaceholder ([string]$envMap['WEBCODEX_TOKEN']))) { $envKeys += 'WEBCODEX_TOKEN' }
+  if ($envKeys.Count -gt 0) { Write-Host ("  webgpt.env keys = " + ($envKeys -join ', ')) }
 }
 
 function Show-WcConfigHelp {
